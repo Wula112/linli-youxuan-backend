@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hmdp.mapper.VoucherMapper">
+
+    <!-- 两张表按优惠券ID绑定分片，关联查询后由ShardingSphere合并去重、排序和LIMIT。 -->
+    <select id="findWarmupShopIds" resultType="java.lang.Long">
+        SELECT DISTINCT v.shop_id
+        FROM tb_voucher v
+        INNER JOIN tb_seckill_voucher sv ON v.id = sv.voucher_id
+        WHERE v.status = 1
+          AND v.type = 1
+          AND sv.end_time &gt; #{now}
+          AND sv.begin_time &lt;= #{startsBefore}
+          AND sv.begin_time &lt; sv.end_time
+        ORDER BY v.shop_id
+        LIMIT #{limit}
+    </select>
+
+    <select id="queryVoucherByIds" resultType="com.hmdp.entity.Voucher">
+        SELECT
+            v.`id`, v.`shop_id`, v.`title`, v.`sub_title`, v.`rules`, v.`pay_value`,
+            v.`actual_value`, v.`type`, sv.`stock` , sv.begin_time , sv.end_time
+        FROM tb_voucher v
+        LEFT JOIN  tb_seckill_voucher sv ON v.id = sv.voucher_id
+        WHERE v.status = 1 AND v.id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        ORDER BY v.id
+    </select>
+</mapper>

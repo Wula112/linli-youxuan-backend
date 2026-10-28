@@ -45,3 +45,8 @@ build/
 ### Runtime output ###
 *.log
 logs/
+
+# Maven 模块中的本机配置
+**/src/main/resources/application.yaml
+**/src/main/resources/application-local.yml
+**/src/main/resources/application-local.yaml

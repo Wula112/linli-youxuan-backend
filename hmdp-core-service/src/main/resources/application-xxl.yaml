@@ -1,0 +1,32 @@
+# 显式启用：--spring.profiles.active=sharding,xxl（不能遗漏现有sharding配置）
+hmdp:
+  job:
+    scheduler: xxl
+    max-run-time: 30s
+  cache:
+    warmup:
+      enabled: true
+      startup-local: true
+      # 默认按秒杀活动自动筛选；非空名单仅用于压测/临时覆盖，无需日常维护ID。
+      hot-shop-ids: []
+      ahead-of-start: 10m
+      max-shops: 100
+      shop-list-ttl: 5m
+      min-remaining-ttl: 2m
+      shop-ttl: 30m
+      max-retries: 2
+      retry-delay: 1s
+      max-retry-delay: 5s
+xxl:
+  job:
+    # 3.4.2 Admin默认根路径；如果自行设置context-path，填实际完整地址。
+    admin-addresses: ${XXL_JOB_ADMIN_ADDRESSES:http://127.0.0.1:8080}
+    access-token: ${XXL_JOB_ACCESS_TOKEN:}
+    appname: hmdp-job-executor
+    # address可填写经NAT映射后的注册地址，ip为执行器对外可达地址。
+    address: ${XXL_JOB_EXECUTOR_ADDRESS:}
+    ip: ${XXL_JOB_EXECUTOR_IP:}
+    port: ${XXL_JOB_EXECUTOR_PORT:9999}
+    timeout: 3
+    log-path: ${XXL_JOB_LOG_PATH:./logs/xxl-job}
+    log-retention-days: 14

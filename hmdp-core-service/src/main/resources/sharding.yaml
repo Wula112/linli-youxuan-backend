@@ -1,0 +1,132 @@
+databaseName: hmdp
+mode:
+  type: Standalone
+  repository:
+    type: Memory
+rules:
+  - !SHARDING
+    tables:
+      tb_shop:
+        actualDataNodes: ds_$->{0..1}.tb_shop_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: id
+            shardingAlgorithmName: id_database
+        tableStrategy:
+          standard:
+            shardingColumn: id
+            shardingAlgorithmName: shop_table
+      tb_voucher:
+        actualDataNodes: ds_$->{0..1}.tb_voucher_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: id
+            shardingAlgorithmName: id_database
+        tableStrategy:
+          standard:
+            shardingColumn: id
+            shardingAlgorithmName: voucher_table
+      tb_seckill_voucher:
+        actualDataNodes: ds_$->{0..1}.tb_seckill_voucher_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: voucher_id
+            shardingAlgorithmName: voucher_database
+        tableStrategy:
+          standard:
+            shardingColumn: voucher_id
+            shardingAlgorithmName: stock_table
+      tb_shop_voucher_index:
+        actualDataNodes: ds_$->{0..1}.tb_shop_voucher_index_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: shop_id
+            shardingAlgorithmName: shop_database
+        tableStrategy:
+          standard:
+            shardingColumn: shop_id
+            shardingAlgorithmName: shop_voucher_table
+      tb_voucher_order:
+        actualDataNodes: ds_$->{0..1}.tb_voucher_order_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: user_id
+            shardingAlgorithmName: user_database
+        tableStrategy:
+          standard:
+            shardingColumn: voucher_id
+            shardingAlgorithmName: order_table
+      tb_voucher_order_router:
+        actualDataNodes: ds_$->{0..1}.tb_voucher_order_router_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: order_id
+            shardingAlgorithmName: order_database
+        tableStrategy:
+          standard:
+            shardingColumn: order_id
+            shardingAlgorithmName: order_router_table
+    bindingTables:
+      - tb_voucher, tb_seckill_voucher
+    shardingAlgorithms:
+      id_database:
+        type: INLINE
+        props:
+          algorithm-expression: ds_$->{id % 2}
+          allow-range-query-with-inline-sharding: true
+      voucher_database:
+        type: INLINE
+        props:
+          algorithm-expression: ds_$->{voucher_id % 2}
+      shop_database:
+        type: INLINE
+        props:
+          algorithm-expression: ds_$->{shop_id % 2}
+      user_database:
+        type: INLINE
+        props:
+          algorithm-expression: ds_$->{user_id % 2}
+      order_database:
+        type: INLINE
+        props:
+          algorithm-expression: ds_$->{order_id % 2}
+      shop_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_shop_$->{id.intdiv(2) % 2}
+          allow-range-query-with-inline-sharding: true
+      voucher_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_voucher_$->{id.intdiv(2) % 2}
+      stock_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_seckill_voucher_$->{voucher_id.intdiv(2) % 2}
+      shop_voucher_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_shop_voucher_index_$->{shop_id.intdiv(2) % 2}
+      order_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_voucher_order_$->{voucher_id % 2}
+      order_router_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_voucher_order_router_$->{order_id.intdiv(2) % 2}
+  - !SINGLE
+    tables:
+      - ds_0.tb_shop_type
+      - ds_0.tb_user
+      - ds_0.tb_user_info
+      - ds_0.tb_blog
+      - ds_0.tb_blog_comments
+      - ds_0.tb_follow
+      - ds_0.tb_sign
+    defaultDataSource: ds_0
+transaction:
+  defaultType: XA
+  providerType: Atomikos
+props:
+  sql-show: ${hmdp.sharding.sql-show:false}

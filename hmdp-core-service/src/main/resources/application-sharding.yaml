@@ -1,0 +1,19 @@
+hmdp:
+  id:
+    # 每个并发运行实例的 (datacenter-id, worker-id) 必须不同，取值均为 0..31。
+    worker-id: ${ID_WORKER_ID:0}
+    datacenter-id: ${ID_DATACENTER_ID:0}
+  sharding:
+    sql-show: ${SHARDING_SQL_SHOW:false}
+    pool-size: ${SHARDING_POOL_SIZE:10}
+    xa-node-id: ${XA_NODE_ID:hmdp-0}
+    xa-log-directory: ${XA_LOG_DIRECTORY:./logs/xa/hmdp-0}
+    nodes:
+      ds-0:
+        url: ${DB_0_URL:jdbc:mysql://127.0.0.1:3306/hmdp_0?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8}
+        username: ${DB_0_USERNAME:${spring.datasource.username:root}}
+        password: ${DB_0_PASSWORD:${spring.datasource.password:}}
+      ds-1:
+        url: ${DB_1_URL:jdbc:mysql://127.0.0.1:3306/hmdp_1?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8}
+        username: ${DB_1_USERNAME:${spring.datasource.username:root}}
+        password: ${DB_1_PASSWORD:${spring.datasource.password:}}
