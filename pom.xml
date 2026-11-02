@@ -13,7 +13,7 @@
     <version>0.0.1-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>hm-dianping</name>
-    <description>黑马点评父工程：公共代码、基础组件、分片接入与核心业务</description>
+    <description>邻里优选父工程：公共代码、基础组件、分片接入与核心业务</description>
     <modules>
         <module>hmdp-common</module>
         <module>hmdp-framework</module>

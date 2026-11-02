@@ -1,6 +1,6 @@
-# 黑马点评后端
+# 邻里优选——本地生活服务平台
 
-基于 Spring Boot、MyBatis-Plus、MySQL 和 Redis 的点评项目后端，提供用户登录、商铺查询、探店笔记、关注、优惠券和秒杀订单等功能。
+基于 Spring Boot、MyBatis-Plus、MySQL 和 Redis 的本地生活服务平台后端，提供用户登录、商铺查询、探店笔记、关注、优惠券和秒杀订单等功能。
 
 ## 项目结构
 
