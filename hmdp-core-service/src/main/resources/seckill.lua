@@ -48,9 +48,9 @@
 -- return 0
 --
 
--- ===== 当前实现：Hash校验一人一单，并原子登记pending =====
--- KEYS: 库存Key、优惠券预占Hash、全局待对账ZSet
--- ARGV: userId、orderId、voucherId、预占时间戳（毫秒）
+-- ===== 当前实现：Hash校验一人一单，原子登记pending并写事务标记 =====
+-- KEYS: 库存Key、优惠券预占Hash、全局待对账ZSet、本订单事务标记
+-- ARGV: userId、orderId、voucherId、预占时间戳（毫秒）、事务标记TTL（秒）
 if redis.call('hexists', KEYS[2], ARGV[1]) == 1 then
     return 2
 end
@@ -61,4 +61,6 @@ end
 redis.call('decr', KEYS[1])
 redis.call('hset', KEYS[2], ARGV[1], ARGV[2])
 redis.call('zadd', KEYS[3], ARGV[4], ARGV[3] .. ':' .. ARGV[1] .. ':' .. ARGV[2])
+-- 与扣减同一个脚本原子写入：Broker 回查到标记就提交半消息，查不到就回滚
+redis.call('set', KEYS[4], ARGV[2], 'EX', ARGV[5])
 return 0

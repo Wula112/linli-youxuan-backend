@@ -4,6 +4,8 @@ import com.hmdp.common.dto.Result;
 import com.hmdp.entity.ShopType;
 import com.baomidou.mybatisplus.spring.service.IService;
 
+import java.util.List;
+
 /**
  * <p>
  *  服务类
@@ -13,5 +15,5 @@ import com.baomidou.mybatisplus.spring.service.IService;
  * @since 2021-12-22
  */
 public interface IShopTypeService extends IService<ShopType> {
-    Result queryTypeList();
+    Result<List<ShopType>> queryTypeList();
 }

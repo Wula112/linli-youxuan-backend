@@ -5,6 +5,7 @@ import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.ISeckillVoucherService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,7 +24,8 @@ import static org.mockito.Mockito.*;
 
 class VoucherOrderCloseTest {
 
-    private final VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
+    // 关单已拆到独立组件；事务模板仍由它按 REQUIRES_NEW 显式创建。
+    private final VoucherOrderCloseService service = new VoucherOrderCloseService();
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
     private final SeckillVoucherMapper stocks = mock(SeckillVoucherMapper.class);
     private final ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
@@ -34,10 +36,10 @@ class VoucherOrderCloseTest {
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(service, "baseMapper", orders);
+        ReflectionTestUtils.setField(service, "voucherOrderMapper", orders);
         com.hmdp.support.OrderRoutingTestSupport.install(service);
         ReflectionTestUtils.setField(service, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(service, "stringRedisTemplate", redis);
+        ReflectionTestUtils.setField(service, "seckillReservation", new SeckillReservation(redis));
         ReflectionTestUtils.setField(service, "transactionManager", manager);
         ReflectionTestUtils.setField(service, "voucherMapper", mock(VoucherMapper.class));
         ReflectionTestUtils.setField(service, "eventPublisher", mock(ApplicationEventPublisher.class));

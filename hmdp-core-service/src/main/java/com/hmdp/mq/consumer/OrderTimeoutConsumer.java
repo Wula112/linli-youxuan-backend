@@ -1,21 +1,44 @@
 package com.hmdp.mq.consumer;
 
-import com.hmdp.mq.config.OrderTimeoutMqConfig;
 import com.hmdp.mq.message.OrderTimeoutMessage;
+import com.hmdp.mq.support.MqMessageCodec;
 import com.hmdp.service.IVoucherOrderService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyContext;
+import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
+import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
+import org.apache.rocketmq.common.message.MessageExt;
 import org.springframework.stereotype.Component;
 
-/** 默认AUTO确认，异常由既有容器配置有限重试，耗尽进入关单死信队列。 */
+import java.util.List;
+
+/** 消费延迟关单消息；关单本身是条件更新，重复或提前投递都不会误关。 */
+@Slf4j
 @Component
 @RequiredArgsConstructor
-public class OrderTimeoutConsumer {
+public class OrderTimeoutConsumer implements MessageListenerConcurrently {
 
     private final IVoucherOrderService voucherOrderService;
 
-    @RabbitListener(queues = OrderTimeoutMqConfig.CLOSE_QUEUE)
-    public void consume(OrderTimeoutMessage message) {
-        voucherOrderService.closeExpiredOrder(message.orderId());
+    @Override
+    public ConsumeConcurrentlyStatus consumeMessage(List<MessageExt> messages, ConsumeConcurrentlyContext context) {
+        for (MessageExt message : messages) {
+            Long orderId;
+            try {
+                orderId = MqMessageCodec.decode(message.getBody(), OrderTimeoutMessage.class).orderId();
+            } catch (Exception ex) {
+                log.error("关单消息无法解析，已跳过，msgId={}", message.getMsgId(), ex);
+                continue;
+            }
+            try {
+                voucherOrderService.closeExpiredOrder(orderId);
+            } catch (Exception ex) {
+                log.error("延迟关单失败，等待重投，orderId={}，已重投次数={}",
+                        orderId, message.getReconsumeTimes(), ex);
+                return ConsumeConcurrentlyStatus.RECONSUME_LATER;
+            }
+        }
+        return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
     }
 }

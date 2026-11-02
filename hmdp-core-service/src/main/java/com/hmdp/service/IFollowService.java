@@ -1,8 +1,11 @@
 package com.hmdp.service;
 
 import com.hmdp.common.dto.Result;
+import com.hmdp.common.dto.UserDTO;
 import com.hmdp.entity.Follow;
 import com.baomidou.mybatisplus.spring.service.IService;
+
+import java.util.List;
 
 /**
  * <p>
@@ -14,9 +17,9 @@ import com.baomidou.mybatisplus.spring.service.IService;
  */
 public interface IFollowService extends IService<Follow> {
 
-    Result follow(Long followUserId, Boolean isFollow);
+    Result<Void> follow(Long followUserId, Boolean isFollow);
 
-    Result isFollow(Long followUserId);
+    Result<Boolean> isFollow(Long followUserId);
 
-    Result commonFollow(Long id);
+    Result<List<UserDTO>> commonFollow(Long id);
 }

@@ -24,6 +24,8 @@
         <java.version>21</java.version>
         <shardingsphere.version>5.5.3</shardingsphere.version>
         <xxl-job.version>3.4.2</xxl-job.version>
+        <!-- 与本地部署的 RocketMQ 5.5.1 服务端保持一致；5.x 客户端才支持任意时长的定时消息。 -->
+        <rocketmq.version>5.5.1</rocketmq.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -31,6 +33,11 @@
                 <groupId>com.xuxueli</groupId>
                 <artifactId>xxl-job-core</artifactId>
                 <version>${xxl-job.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.rocketmq</groupId>
+                <artifactId>rocketmq-client</artifactId>
+                <version>${rocketmq.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.shardingsphere</groupId>

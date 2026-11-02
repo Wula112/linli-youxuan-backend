@@ -34,6 +34,7 @@ class VoucherOrderPaymentIT {
     private final JdbcTemplate server = new JdbcTemplate(new DriverManagerDataSource(
             "jdbc:mysql://127.0.0.1:3308/?allowPublicKeyRetrieval=true&useSSL=false", "root", ""));
     private final VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
+    private final VoucherOrderPaymentService payment = new VoucherOrderPaymentService();
     private JdbcTemplate db;
     private VoucherOrderMapper orders;
 
@@ -68,7 +69,10 @@ class VoucherOrderPaymentIT {
         var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration));
         orders = session.getMapper(VoucherOrderMapper.class);
         ReflectionTestUtils.setField(service, "baseMapper", orders);
-        com.hmdp.support.OrderRoutingTestSupport.install(service);
+        var routes = com.hmdp.support.OrderRoutingTestSupport.install(service);
+        // 支付已拆到独立组件，与门面共用同一个Mapper和路由桩。
+        ReflectionTestUtils.setField(payment, "voucherOrderMapper", orders);
+        ReflectionTestUtils.setField(payment, "voucherOrderRouterMapper", routes);
     }
 
     @BeforeEach
@@ -107,7 +111,7 @@ class VoucherOrderPaymentIT {
         var paid = orders.selectRoutedOrder(1000L, 5L, 10L);
         assertEquals(2, paid.getStatus());
         assertNotNull(paid.getPayTime());
-        assertTrue(service.mockPay(1000L, 3).getSuccess());
+        assertTrue(payment.mockPay(1000L, 3).getSuccess());
         var repeated = orders.selectRoutedOrder(1000L, 5L, 10L);
         assertEquals(paid.getPayTime(), repeated.getPayTime());
         assertEquals(paid.getPayType(), repeated.getPayType());
@@ -116,7 +120,7 @@ class VoucherOrderPaymentIT {
     @Test
     void shouldRejectDeadlineReachedUsingDatabaseTime() {
         insertOrder(1, 0);
-        assertFalse(service.mockPay(1000L, 1).getSuccess());
+        assertFalse(payment.mockPay(1000L, 1).getSuccess());
         assertEquals(1, orders.selectRoutedOrder(1000L, 5L, 10L).getStatus());
         assertNull(orders.selectRoutedOrder(1000L, 5L, 10L).getPayTime());
     }
@@ -124,7 +128,7 @@ class VoucherOrderPaymentIT {
     @Test
     void shouldRejectClosedOrderAndNotChangeItsState() {
         insertOrder(4, 60);
-        assertEquals("订单已关闭，无法支付", service.mockPay(1000L, 1).getErrorMsg());
+        assertEquals("订单已关闭，无法支付", payment.mockPay(1000L, 1).getErrorMsg());
         assertEquals(4, orders.selectRoutedOrder(1000L, 5L, 10L).getStatus());
         assertNull(orders.selectRoutedOrder(1000L, 5L, 10L).getPayTime());
     }
@@ -133,7 +137,7 @@ class VoucherOrderPaymentIT {
     void shouldNeverPayOrExposeAnotherUsersOrder() {
         insertOrder(1, 60);
         db.update("UPDATE tb_voucher_order SET user_id=6 WHERE id=1000");
-        assertFalse(service.mockPay(1000L, 1).getSuccess());
+        assertFalse(payment.mockPay(1000L, 1).getSuccess());
         assertFalse(service.queryVoucherOrder(1000L).getSuccess());
         assertNull(orders.selectRoutedOrder(1000L, 5L, 10L));
         assertEquals(1, orders.selectRoutedOrder(1000L, 6L, 10L).getStatus());
@@ -142,10 +146,10 @@ class VoucherOrderPaymentIT {
     @Test
     void shouldKeepFirstPaymentWhenRetriedAfterDeadline() {
         insertOrder(1, 60);
-        assertTrue(service.mockPay(1000L, 2).getSuccess());
+        assertTrue(payment.mockPay(1000L, 2).getSuccess());
         LocalDateTime paidAt = orders.selectRoutedOrder(1000L, 5L, 10L).getPayTime();
         db.update("UPDATE tb_voucher_order SET expire_time=TIMESTAMPADD(SECOND,-1,NOW(3)) WHERE id=1000");
-        assertTrue(service.mockPay(1000L, 3).getSuccess());
+        assertTrue(payment.mockPay(1000L, 3).getSuccess());
         var order = orders.selectRoutedOrder(1000L, 5L, 10L);
         assertEquals(2, order.getStatus());
         assertEquals(2, order.getPayType());

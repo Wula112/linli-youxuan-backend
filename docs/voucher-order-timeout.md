@@ -1,16 +1,16 @@
 # 延迟自动关单
 
-默认支付窗口15分钟，使用固定消息TTL队列与DLX触发关单，MySQL条件更新决定是否允许关闭，数据库扫描兜底。未支付订单关闭后返还库存，允许原用户再次抢购同一张券，历史订单保留。
+默认支付窗口15分钟，使用 RocketMQ 5.x 定时消息按 `pay-timeout` 精确投递关单通知，MySQL条件更新决定是否允许关闭，数据库扫描兜底。未支付订单关闭后返还库存，允许原用户再次抢购同一张券，历史订单保留。
 
 ## 消息与事务
 
 ```text
 订单事务首次建单成功并提交
-    → OrderTimeoutPublisher（Confirm + Returns + 有限重试）
-    → order.delay.exchange → order.delay.queue（固定消息TTL，默认15分钟，无消费者）
-    → 过期后转发至 order.close.exchange → order.close.queue
+    → OrderTimeoutPublisher（提交后发送，检查 SendStatus）
+    → 主题 hmdp-voucher-order，标签 timeout，setDelayTimeSec(pay-timeout)
+    → Broker 定时到期后投递给 hmdp-order-timeout-consumer
     → OrderTimeoutConsumer → closeExpiredOrder
-    → 正常返回AUTO ACK；异常按原容器配置重试，耗尽转 order.close.dlq
+    → 正常返回 CONSUME_SUCCESS；异常重投，耗尽转 %DLQ%hmdp-order-timeout-consumer
 ```
 
 消息只保存订单ID。提交回调内发布失败只记录日志，不能撤销已提交的订单。MQ通知比实际expire_time晚到或者提前到达时，都以数据库截止时间为准；提前通知不会关单，之后由数据库扫描处理。
@@ -60,18 +60,16 @@ hmdp:
     timeout-scan-batch-size: 100
 ```
 
-发送确认、Returns和发布重试复用 `hmdp.mq.voucher-order`；消费确认、有限重试复用现有RabbitMQ默认容器配置。
+发送超时与重试复用 `hmdp.rocketmq` 的 `send-timeout`、`retry-times-when-send-failed`；消费失败重投次数复用 `max-reconsume-times`，耗尽进入死信主题。
 
 已有数据库在暂停写入后，先确保原唯一索引及 `voucher-order-payment.sql` 已应用，再执行一次 `hmdp-core-service/src/main/resources/db/voucher-order-timeout.sql`。不要重新导入含DROP TABLE的hmdp.sql。新建数据库的hmdp.sql已经包含生成列、新唯一索引、返库标记及扫描索引。
 
 升级脚本将历史状态4订单的返库标记设为完成，避免在缺少历史返库凭据时自动重复加库存；这些历史库存和旧Redis资格需单独核查。本次新关闭订单则显式标记为未完成，纳入自动补偿。
 
-队列TTL从消息入队起算，现存队列的声明参数不能通过简单修改配置直接变更。调整pay-timeout时，需要安排已有延迟队列的参数迁移，避免RabbitMQ的PRECONDITION_FAILED；有积压时不能直接删除队列。数据库expire_time和扫描始终是最终判断依据。
+定时消息按投递时刻计算，调整 `pay-timeout` 只影响之后新建的订单，已有的延迟消息不会追溯修改；数据库 `expire_time` 和扫描始终是最终判断依据。
 
-保留Redis库存与预占数据的持久化保障；这里的幂等依赖预占归属，不能随意删除Hash后再凭总库存猜测返还。MySQL、Redis和RabbitMQ仍不构成单个原子事务，扫描用于恢复跨存储的未完成步骤。
+保留Redis库存与预占数据的持久化保障；这里的幂等依赖预占归属，不能随意删除Hash后再凭总库存猜测返还。MySQL、Redis和RocketMQ仍不构成单个原子事务，扫描用于恢复跨存储的未完成步骤。
 
 ## 验证
 
-单元测试覆盖提交后发布、回滚不发送、Confirm NACK/Return/超时重试、关单与返库提交顺序、失败恢复以及扫描游标。
-
-`VoucherOrderFlowIT` 使用专用MySQL3308、Redis6388和RabbitMQ5678，显式设置 `HMDP_VOUCHER_ORDER_IT=true` 后运行。新增真实TTL/DLX自动关闭、支付后通知不关单、漏消息扫描兜底、Redis故障补偿、返库标记失败后重新抢购、并发关闭、失败重试进死信和支付/关闭竞争场景。测试使用随机数据库，延迟队列使用短TTL，结束后清理测试拓扑。
+单元测试覆盖提交后发送、回滚不发送、延迟时长与消息内容、关单与返库提交顺序以及失败恢复。原 `VoucherOrderFlowIT` 依赖 RabbitMQ 的 TTL/DLX 拓扑，已随链路迁移删除；新的端到端联调需要可用的 RocketMQ 5.x、MySQL 与 Redis。

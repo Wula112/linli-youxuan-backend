@@ -21,13 +21,17 @@ import static org.mockito.Mockito.*;
 
 class VoucherOrderPaymentTest {
 
-    private final VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
+    // 支付已拆到独立组件，订单查询仍由门面提供；两者共享同一份Mapper桩。
+    private final VoucherOrderServiceImpl facade = new VoucherOrderServiceImpl();
+    private final VoucherOrderPaymentService service = new VoucherOrderPaymentService();
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(service, "baseMapper", orders);
-        com.hmdp.support.OrderRoutingTestSupport.install(service);
+        ReflectionTestUtils.setField(facade, "baseMapper", orders);
+        var routes = com.hmdp.support.OrderRoutingTestSupport.install(facade);
+        ReflectionTestUtils.setField(service, "voucherOrderMapper", orders);
+        ReflectionTestUtils.setField(service, "voucherOrderRouterMapper", routes);
         UserDTO user = new UserDTO();
         user.setId(5L);
         UserHolder.saveUser(user);
@@ -76,7 +80,7 @@ class VoucherOrderPaymentTest {
     void shouldNotExposeOrPayAnotherUsersOrderEvenIfItIsAlreadyPaid() {
         when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(order(2).setUserId(6L));
         assertEquals("订单不存在", service.mockPay(1000L, 1).getErrorMsg());
-        assertEquals("订单不存在", service.queryVoucherOrder(1000L).getErrorMsg());
+        assertEquals("订单不存在", facade.queryVoucherOrder(1000L).getErrorMsg());
         verify(orders).payIfUnpaid(1000L, 5L, 10L, 1);
     }
 
@@ -84,20 +88,20 @@ class VoucherOrderPaymentTest {
     void shouldReturnOwnOrderIncludingStatusAndDeadline() {
         VoucherOrder order = order(1).setExpireTime(LocalDateTime.now().plusMinutes(15));
         when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(order);
-        assertSame(order, service.queryVoucherOrder(1000L).getData());
+        assertSame(order, facade.queryVoucherOrder(1000L).getData());
     }
 
     @Test
     void shouldHandleOrderNotYetCreatedWithoutTreatingItAsPaid() {
         assertEquals("订单不存在", service.mockPay(1000L, 1).getErrorMsg());
-        assertFalse(service.queryVoucherOrder(1000L).getSuccess());
+        assertFalse(facade.queryVoucherOrder(1000L).getSuccess());
     }
 
     @Test
     void shouldRejectUnauthenticatedCallsBeforeAccessingDatabase() {
         UserHolder.removeUser();
         assertEquals("请先登录", service.mockPay(1000L, 1).getErrorMsg());
-        assertEquals("请先登录", service.queryVoucherOrder(1000L).getErrorMsg());
+        assertEquals("请先登录", facade.queryVoucherOrder(1000L).getErrorMsg());
         verifyNoInteractions(orders);
     }
 
@@ -108,7 +112,7 @@ class VoucherOrderPaymentTest {
         assertFalse(service.mockPay(1000L, null).getSuccess());
         assertFalse(service.mockPay(1000L, 0).getSuccess());
         assertFalse(service.mockPay(1000L, 4).getSuccess());
-        assertFalse(service.queryVoucherOrder(-1L).getSuccess());
+        assertFalse(facade.queryVoucherOrder(-1L).getSuccess());
         verifyNoInteractions(orders);
     }
 

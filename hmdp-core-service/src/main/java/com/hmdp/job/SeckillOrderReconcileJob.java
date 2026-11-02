@@ -4,6 +4,8 @@ import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
+import com.hmdp.repository.redis.SeckillPendingRepository;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.job.config.SeckillReconcileProperties;
 import com.hmdp.job.config.JobProperties;
 import com.hmdp.job.support.JobRun;
@@ -14,19 +16,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-import static com.hmdp.common.constant.RedisConstants.SECKILL_PENDING_KEY;
-import static com.hmdp.common.constant.RedisConstants.SECKILL_PENDING_RETRIES_KEY;
-import static com.hmdp.common.constant.RedisConstants.SECKILL_RESERVATION_KEY;
-import static com.hmdp.common.constant.RedisConstants.SECKILL_STOCK_KEY;
 import static com.hmdp.common.constant.RedisConstants.LOCK_VOUCHER_ORDER_KEY;
 
 // 原职责（保留）：只核对订单、清理已完成索引或补发原消息，不恢复库存、不删除购买资格。
@@ -37,32 +31,14 @@ import static com.hmdp.common.constant.RedisConstants.LOCK_VOUCHER_ORDER_KEY;
 @ConditionalOnProperty(prefix = "hmdp.seckill.reconcile", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class SeckillOrderReconcileJob {
 
-    private static final DefaultRedisScript<Long> CLAIM_SCRIPT;
-    private static final DefaultRedisScript<Long> RETRY_SCRIPT;
-    private static final DefaultRedisScript<Long> CLEAR_SCRIPT;
-    private static final DefaultRedisScript<Long> ROLLBACK_SCRIPT;
-
-    static {
-        CLAIM_SCRIPT = new DefaultRedisScript<>();
-        CLAIM_SCRIPT.setLocation(new ClassPathResource("seckill-pending-claim.lua"));
-        CLAIM_SCRIPT.setResultType(Long.class);
-        RETRY_SCRIPT = new DefaultRedisScript<>();
-        RETRY_SCRIPT.setLocation(new ClassPathResource("seckill-pending-retry.lua"));
-        RETRY_SCRIPT.setResultType(Long.class);
-        CLEAR_SCRIPT = new DefaultRedisScript<>();
-        CLEAR_SCRIPT.setLocation(new ClassPathResource("seckill-pending-clear.lua"));
-        CLEAR_SCRIPT.setResultType(Long.class);
-        ROLLBACK_SCRIPT = new DefaultRedisScript<>();
-        ROLLBACK_SCRIPT.setLocation(new ClassPathResource("seckill-rollback.lua"));
-        ROLLBACK_SCRIPT.setResultType(Long.class);
-    }
-
-    private final StringRedisTemplate stringRedisTemplate;
+    // pending 扫描、领取与补发计数都通过仓储访问，Lua、Key 和原子范围留在 repository.redis。
+    private final SeckillPendingRepository pendingRepository;
     private final VoucherOrderMapper voucherOrderMapper;
     private final VoucherOrderPublisher voucherOrderPublisher;
     private final SeckillReconcileProperties properties;
     private final RedissonClient redissonClient;
     private final JobProperties jobProperties;
+    private final SeckillReservation seckillReservation;
 
     // 原本地入口（调度注解现移入SeckillReconcileConfig，确保与XXL互斥）：
     // @Scheduled(fixedDelayString = "${hmdp.seckill.reconcile.interval:60000}", scheduler = "seckillReconcileScheduler")
@@ -79,8 +55,7 @@ public class SeckillOrderReconcileJob {
         long deadline = System.currentTimeMillis() - properties.getPendingTimeout().toMillis();
         Set<String> members;
         try {
-            members = stringRedisTemplate.opsForZSet()
-                    .rangeByScore(SECKILL_PENDING_KEY, 0, deadline, 0, properties.getBatchSize());
+            members = pendingRepository.findDue(deadline, properties.getBatchSize());
         } catch (Exception ex) {
             log.error("扫描秒杀待对账订单失败", ex);
             XxlJobHelper.log(ex);
@@ -94,13 +69,9 @@ public class SeckillOrderReconcileJob {
             if (!run.canContinue()) break;
             try {
                 // 原子领取并延期：多实例看到同一批候选时，只有一个实例处理。
-                Long claimed = stringRedisTemplate.execute(CLAIM_SCRIPT, List.of(SECKILL_PENDING_KEY),
-                        member, Long.toString(deadline), Long.toString(System.currentTimeMillis()));
-                if (Long.valueOf(1).equals(claimed)) {
+                if (pendingRepository.claim(member, deadline)) {
                     run.checked();
                     reconcileOne(member, run);
-                } else if (claimed == null) {
-                    throw new IllegalStateException("对账领取结果为空，member=" + member);
                 } else {
                     run.skipped();
                 }
@@ -128,8 +99,7 @@ public class SeckillOrderReconcileJob {
         if (clearPendingIfOrderExists(message, run)) {
             return;
         }
-        Object reservedOrderId = stringRedisTemplate.opsForHash().get(
-                SECKILL_RESERVATION_KEY + message.voucherId(), message.userId().toString());
+        Object reservedOrderId = seckillReservation.getReservedOrderId(message.voucherId(), message.userId());
         if (reservedOrderId == null) {
             log.error("预占Hash记录缺失，不补发、不释放库存，member={}", member);
             XxlJobHelper.log("预占Hash记录缺失，member={}", member);
@@ -139,7 +109,7 @@ public class SeckillOrderReconcileJob {
         if (!message.orderId().toString().equals(reservedOrderId)) {
             // 当前用户已经由另一笔预占占用；只移除旧member，不能影响新请求。
             // 原清理：stringRedisTemplate.opsForZSet().remove(SECKILL_PENDING_KEY, member);
-            clearPending(member);
+            seckillReservation.clearPending(member);
             log.warn("清理已失效的旧订单pending，member={}", member);
             return;
         }
@@ -149,14 +119,8 @@ public class SeckillOrderReconcileJob {
         //     return;
         // }
         // voucherOrderPublisher.publish(message);
-        Long retryCount = stringRedisTemplate.execute(RETRY_SCRIPT,
-                List.of(SECKILL_PENDING_KEY, SECKILL_PENDING_RETRIES_KEY,
-                        SECKILL_RESERVATION_KEY + message.voucherId()),
-                member, Integer.toString(properties.getMaxRepublishRetries()),
-                message.userId().toString(), message.orderId().toString());
-        if (retryCount == null) {
-            throw new IllegalStateException("秒杀订单补发计数结果为空，member=" + member);
-        }
+        long retryCount = pendingRepository.bumpRetry(member, message.voucherId(), message.userId(),
+                message.orderId(), properties.getMaxRepublishRetries());
         if (retryCount < 0) {
             // 原逻辑（保留）：达到上限仅保留pending，等待人工核查。
             // log.error("秒杀订单补发重试次数达到上限，保留pending待人工核查，member={}", member);
@@ -188,8 +152,7 @@ public class SeckillOrderReconcileJob {
             if (clearPendingIfOrderExists(message, run)) {
                 return;
             }
-            Object reservedOrderId = stringRedisTemplate.opsForHash().get(
-                    SECKILL_RESERVATION_KEY + message.voucherId(), message.userId().toString());
+            Object reservedOrderId = seckillReservation.getReservedOrderId(message.voucherId(), message.userId());
             if (reservedOrderId == null) {
                 log.error("锁内预占Hash记录缺失，不释放库存，保留pending待核查，member={}", member);
                 XxlJobHelper.log("锁内预占Hash记录缺失，member={}", member);
@@ -197,15 +160,12 @@ public class SeckillOrderReconcileJob {
                 return;
             }
             if (!message.orderId().toString().equals(reservedOrderId)) {
-                clearPending(member);
+                seckillReservation.clearPending(member);
                 log.warn("锁内预占已变更，只清理旧订单pending，member={}", member);
                 return;
             }
             // Lua再次校验归属，原子返还库存并清理资格、pending及计数；迟到消息将因资格不匹配跳过建单。
-            Long released = stringRedisTemplate.execute(ROLLBACK_SCRIPT,
-                    List.of(SECKILL_STOCK_KEY + message.voucherId(), SECKILL_RESERVATION_KEY + message.voucherId(),
-                            SECKILL_PENDING_KEY, SECKILL_PENDING_RETRIES_KEY),
-                    message.userId().toString(), message.orderId().toString(), member);
+            Long released = seckillReservation.rollback(message.voucherId(), message.userId(), message.orderId());
             if (released == null || released < 0) {
                 throw new IllegalStateException("补发耗尽后的预占释放失败，保留pending待重试，member=" + member);
             }
@@ -231,12 +191,7 @@ public class SeckillOrderReconcileJob {
             return true;
         }
         // 原清理：stringRedisTemplate.opsForZSet().remove(SECKILL_PENDING_KEY, member);
-        clearPending(message.pendingMember());
+        seckillReservation.clearPending(message.pendingMember());
         return true;
-    }
-
-    private void clearPending(String member) {
-        stringRedisTemplate.execute(CLEAR_SCRIPT,
-                List.of(SECKILL_PENDING_KEY, SECKILL_PENDING_RETRIES_KEY), member);
     }
 }

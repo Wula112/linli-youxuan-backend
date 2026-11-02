@@ -4,6 +4,8 @@ import com.hmdp.common.dto.Result;
 import com.hmdp.entity.Shop;
 import com.baomidou.mybatisplus.spring.service.IService;
 
+import java.util.List;
+
 /**
  * <p>
  *  服务类
@@ -14,9 +16,12 @@ import com.baomidou.mybatisplus.spring.service.IService;
  */
 public interface IShopService extends IService<Shop> {
 
-    Result queryById(Long id);
+    Result<Shop> queryById(Long id);
 
-    Result update(Shop shop);
+    Result<Void> update(Shop shop);
 
-    Result queryShopByType(Integer typeId, Integer current, Double x, Double y);
+    Result<List<Shop>> queryShopByType(Integer typeId, Integer current, Double x, Double y);
+
+    /** 按名称模糊分页查询；分页大小与排序留在业务层。 */
+    Result<List<Shop>> queryShopByName(String name, Integer current);
 }

@@ -62,7 +62,7 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
     }
 
     @Override
-    public Result queryTypeList() {
+    public Result<List<ShopType>> queryTypeList() {
         // 按配置选择MySQL、Redis或Caffeine查询路径
         List<ShopType> typeList = shopTypeCacheService.getTypeList();
         return Result.ok(typeList);

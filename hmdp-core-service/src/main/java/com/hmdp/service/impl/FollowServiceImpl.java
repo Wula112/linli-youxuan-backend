@@ -37,7 +37,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     private IUserService userService;
 
     @Override
-    public Result follow(Long followUserId, Boolean isFollow) {
+    public Result<Void> follow(Long followUserId, Boolean isFollow) {
         Long userId = UserHolder.getUser().getId();
         // 1. 关注
         String key = "follows:" + userId;
@@ -63,7 +63,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     }
 
     @Override
-    public Result isFollow(Long followUserId) {
+    public Result<Boolean> isFollow(Long followUserId) {
         Long userId = UserHolder.getUser().getId();
         // 查询是否关注
         Long count = query().eq("user_id", userId).
@@ -73,7 +73,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     }
 
     @Override
-    public Result commonFollow(Long id) {
+    public Result<List<UserDTO>> commonFollow(Long id) {
         String userId = UserHolder.getUser().getId().toString();
         String key = "follows:" + userId;
         String key2 = "follows:" + id;

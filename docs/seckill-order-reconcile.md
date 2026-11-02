@@ -99,6 +99,8 @@ hmdp:
 mvn "-Dtest=*Test" test
 ```
 
-`VoucherOrderFlowIT` 使用专用 MySQL 3308、Redis 6388、RabbitMQ 5678，显式设置 `HMDP_VOUCHER_ORDER_IT=true` 后运行。除原异步链路外，覆盖预扣后未发布消息的补单、已有订单的索引补清、并发领取只有一个成功、清理后不重新加入 pending、补发失败保留预占并延迟核查，以及库存为 0 时优先检查重复购买。补发耗尽场景覆盖最后一轮后的等待、消费者事务未提交时保留预占、锁外查询后消费者先提交、释放失败后重试，以及释放后重新抢购与迟到 RabbitMQ 消息的隔离。
+`VoucherOrderFlowIT` 依赖 RabbitMQ 拓扑，已随秒杀链路迁移到 RocketMQ 而删除；其覆盖的补单、索引补清、并发领取、补发耗尽与释放竞争场景，目前由 `SeckillOrderReconcileJobTest` 与 `SeckillTransactionListenerTest` 在单元层覆盖。
 
 `SeckillPendingRetryIT` 仅使用专用 Redis，显式设置 `HMDP_SECKILL_REDIS_IT=true` 后运行；默认端口 6388，可用 `-Dhmdp.test.redis.port` 指定其他测试端口。测试使用随机 Key，覆盖累计额度、多客户端并发上限、清理与计数竞争、禁用补发和原回退清理。
+
+`SeckillReservationIT` 使用专用 Redis 验证预扣组件和实际 Lua 的衔接，默认端口 16389。显式设置 `HMDP_SECKILL_RESERVATION_IT=true` 后运行 `mvn "-Dtest=SeckillReservationIT" test`；测试只清理随机生成的订单及优惠券数据，不要将测试端口指向业务 Redis。

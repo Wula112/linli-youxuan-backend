@@ -1,13 +1,17 @@
-package com.hmdp.mq;
+package com.hmdp.mq.consumer;
 
 import com.hmdp.entity.VoucherOrder;
-import com.hmdp.mq.consumer.VoucherOrderConsumer;
 import com.hmdp.mq.message.VoucherOrderMessage;
+import com.hmdp.mq.support.MqMessageCodec;
 import com.hmdp.service.IVoucherOrderService;
+import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
+import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -24,7 +28,9 @@ class VoucherOrderConsumerTest {
     void shouldHoldLockUntilTransactionalServiceReturns() {
         when(redisson.getLock("lock:order:10:5")).thenReturn(lock);
         when(lock.tryLock()).thenReturn(true);
-        consumer.consume(message);
+
+        assertEquals(ConsumeConcurrentlyStatus.CONSUME_SUCCESS, consumer.consumeMessage(List.of(message()), null));
+
         var sequence = inOrder(lock, service);
         sequence.verify(lock).tryLock();
         ArgumentCaptor<VoucherOrder> order = ArgumentCaptor.forClass(VoucherOrder.class);
@@ -36,19 +42,41 @@ class VoucherOrderConsumerTest {
     }
 
     @Test
-    void shouldThrowWhenLockIsBusySoContainerRetries() {
+    void shouldAskForRedeliveryWhenLockIsBusy() {
         when(redisson.getLock("lock:order:10:5")).thenReturn(lock);
-        assertThrows(IllegalStateException.class, () -> consumer.consume(message));
+
+        assertEquals(ConsumeConcurrentlyStatus.RECONSUME_LATER, consumer.consumeMessage(List.of(message()), null));
+
         verifyNoInteractions(service);
         verify(lock, never()).unlock();
     }
 
     @Test
-    void shouldReleaseLockAndPropagateDatabaseFailure() {
+    void shouldReleaseLockAndAskForRedeliveryOnDatabaseFailure() {
         when(redisson.getLock("lock:order:10:5")).thenReturn(lock);
         when(lock.tryLock()).thenReturn(true);
         doThrow(new IllegalStateException("database unavailable")).when(service).createVoucherOrder(any());
-        assertThrows(IllegalStateException.class, () -> consumer.consume(message));
+
+        assertEquals(ConsumeConcurrentlyStatus.RECONSUME_LATER, consumer.consumeMessage(List.of(message()), null));
+
         verify(lock).unlock();
+    }
+
+    @Test
+    void shouldSkipUnreadableMessageWithoutRetrying() {
+        MessageExt broken = new MessageExt();
+        broken.setBody(new byte[]{'x'});
+
+        assertEquals(ConsumeConcurrentlyStatus.CONSUME_SUCCESS, consumer.consumeMessage(List.of(broken), null));
+
+        verifyNoInteractions(service, redisson);
+    }
+
+    private MessageExt message() {
+        MessageExt raw = new MessageExt();
+        raw.setTopic("topic");
+        raw.setBody(MqMessageCodec.encode(message));
+        raw.setMsgId("msg-1");
+        return raw;
     }
 }

@@ -10,7 +10,7 @@ import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherService;
 import com.hmdp.cache.VoucherListCacheService;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import com.hmdp.repository.redis.SeckillReservation;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,8 +19,6 @@ import jakarta.annotation.Resource;
 import java.util.List;
 import java.io.Serializable;
 import java.util.Objects;
-
-import static com.hmdp.common.constant.RedisConstants.SECKILL_STOCK_KEY;
 
 /**
  * <p>
@@ -37,7 +35,7 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
     private ISeckillVoucherService seckillVoucherService;
 
     @Resource
-    private StringRedisTemplate stringRedisTemplate;
+    private SeckillReservation seckillReservation;
 
     @Resource
     private VoucherListCacheService voucherListCacheService;
@@ -93,7 +91,7 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
     }
 
     @Override
-    public Result queryVoucherOfShop(Long shopId) {
+    public Result<List<Voucher>> queryVoucherOfShop(Long shopId) {
         // 按配置选择MySQL、Redis或Caffeine查询路径
         List<Voucher> vouchers = voucherListCacheService.getVoucherByShopId(shopId);
         return Result.ok(vouchers);
@@ -111,8 +109,8 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         seckillVoucher.setBeginTime(voucher.getBeginTime());
         seckillVoucher.setEndTime(voucher.getEndTime());
         seckillVoucherService.save(seckillVoucher);
-        // 添加秒杀优惠券到Redis
-        stringRedisTemplate.opsForValue().set(SECKILL_STOCK_KEY + voucher.getId().toString(),voucher.getStock().toString());
+        // 添加秒杀优惠券到Redis，库存Key与预扣、回退脚本保持一致
+        seckillReservation.initStock(voucher.getId(), voucher.getStock());
 
     }
 }

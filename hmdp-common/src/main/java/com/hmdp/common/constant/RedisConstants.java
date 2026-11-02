@@ -35,6 +35,8 @@ public class RedisConstants {
     public static final String SECKILL_PENDING_KEY = "seckill:pending";
     // Hash：完整pending member -> 已使用的对账补发轮次，不随消息重建而归零。
     public static final String SECKILL_PENDING_RETRIES_KEY = "seckill:pending:retries";
+    // 事务标记：与预扣同脚本写入，RocketMQ 回查只认这个标记。
+    public static final String SECKILL_TXN_KEY = "seckill:txn:";
     public static final String LOCK_VOUCHER_ORDER_KEY = "lock:order:";
     public static final String BLOG_LIKED_KEY = "blog:liked:";
     public static final String FEED_KEY = "feed:";

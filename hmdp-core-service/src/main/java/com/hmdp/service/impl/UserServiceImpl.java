@@ -50,7 +50,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     private StringRedisTemplate stringRedisTemplate;
 
     @Override
-    public Result sendCode(String phone, HttpSession session) {
+    public Result<Void> sendCode(String phone, HttpSession session) {
         // 1. 校验手机号
         if(RegexUtils.isPhoneInvalid(phone)){
             return Result.fail("手机号格式错误！");
@@ -66,7 +66,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     @Override
-    public Result login(LoginFormDTO loginForm, HttpSession session) {
+    public Result<String> login(LoginFormDTO loginForm, HttpSession session) {
         // 1. 校验手机号
         String phone = loginForm.getPhone();
         if(RegexUtils.isPhoneInvalid(phone)){
@@ -99,7 +99,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     @Override
-    public Result sign() {
+    public Result<Void> sign() {
         // 1. 获取当前用户信息
         String userId = UserHolder.getUser().getId().toString();
         // 2. 获取当前日期
@@ -115,7 +115,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     @Override
-    public Result signCount() {
+    public Result<Integer> signCount() {
         // 1. 获取当前用户信息
         String userId = UserHolder.getUser().getId().toString();
         // 2. 获取当前日期

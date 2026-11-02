@@ -1,6 +1,6 @@
 package com.hmdp.framework.ratelimit;
 
-import com.hmdp.config.WebExceptionAdvice;
+import com.hmdp.controller.advice.WebExceptionAdvice;
 import com.hmdp.controller.VoucherOrderController;
 import com.hmdp.common.dto.Result;
 import com.hmdp.common.dto.UserDTO;

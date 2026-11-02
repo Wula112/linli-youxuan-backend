@@ -4,13 +4,15 @@ import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
+import com.hmdp.repository.redis.SeckillPendingRepository;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.job.config.SeckillReconcileProperties;
 import com.hmdp.job.config.JobProperties;
+import org.apache.rocketmq.client.exception.MQClientException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.core.retry.RetryException;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -73,7 +75,9 @@ class SeckillOrderReconcileJobTest {
     private final SeckillReconcileProperties properties = new SeckillReconcileProperties();
     private final RedissonClient redisson = mock(RedissonClient.class);
     private final RLock orderLock = mock(RLock.class);
-    private final SeckillOrderReconcileJob job = new SeckillOrderReconcileJob(redis, orders, publisher, properties, redisson, new JobProperties());
+    private final SeckillOrderReconcileJob job = new SeckillOrderReconcileJob(
+            new SeckillPendingRepository(redis), orders, publisher, properties, redisson,
+            new JobProperties(), new SeckillReservation(redis));
 
     @BeforeEach
     void setUp() {
@@ -114,7 +118,7 @@ class SeckillOrderReconcileJobTest {
 
     @Test
     void shouldKeepPendingWhenPublishingFails() throws Exception {
-        doThrow(new RetryException("MQ unavailable", new IllegalStateException())).when(publisher).publish(any());
+        doThrow(new MQClientException("MQ unavailable", null)).when(publisher).publish(any());
         assertDoesNotThrow(job::reconcile);
         verify(pending, never()).remove(anyString(), any());
         verify(reservations, never()).delete(anyString(), any());
@@ -181,9 +185,10 @@ class SeckillOrderReconcileJobTest {
         AtomicLong used = new AtomicLong();
         when(redis.execute(any(RedisScript.class), eq(RETRY_KEYS), eq(MEMBER), eq("5"), eq("5"), eq("1000")))
                 .thenAnswer(invocation -> used.get() >= 5 ? -1L : used.incrementAndGet());
-        doThrow(new RetryException("MQ unavailable", new IllegalStateException())).when(publisher).publish(any());
+        doThrow(new MQClientException("MQ unavailable", null)).when(publisher).publish(any());
         for (int i = 0; i < 8; i++) {
-            new SeckillOrderReconcileJob(redis, orders, publisher, properties, redisson, new JobProperties()).reconcile();
+            new SeckillOrderReconcileJob(new SeckillPendingRepository(redis), orders, publisher, properties,
+                    redisson, new JobProperties(), new SeckillReservation(redis)).reconcile();
         }
         assertEquals(5, used.get());
         verify(publisher, times(5)).publish(any());

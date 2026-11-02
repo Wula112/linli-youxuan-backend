@@ -1,30 +1,6 @@
 server:
   port: 8081
 spring:
-  rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USERNAME:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
-    virtual-host: ${RABBITMQ_VHOST:/}
-    connection-timeout: 5s
-    requested-heartbeat: 10s
-    publisher-confirm-type: correlated
-    publisher-returns: true
-    template:
-      mandatory: true
-    listener:
-      simple:
-        acknowledge-mode: auto
-        prefetch: 20
-        concurrency: 2
-        default-requeue-rejected: false
-        retry:
-          enabled: true
-          max-retries: 2 # 首次执行 + 2次重试，Spring Boot 4使用max-retries
-          initial-interval: 500ms
-          multiplier: 2
-          max-interval: 2s
   application:
     name: hmdp
   datasource:
@@ -48,6 +24,16 @@ spring:
 mybatis-plus:
   type-aliases-package: com.hmdp.entity
 hmdp:
+  rocketmq:
+    # 5.x 服务端：定时消息按支付超时精确投递
+    name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+    producer-group: hmdp-producer
+    send-timeout: 3s
+    retry-times-when-send-failed: 2
+    # 消费失败重投次数，耗尽后进入 %DLQ%<consumer-group>
+    max-reconsume-times: 2
+    consume-threads: 4
+    transaction-check-threads: 4
   job:
     # local与xxl互斥；XXL配置见application-xxl.yaml
     scheduler: local
@@ -69,11 +55,6 @@ hmdp:
       batch-size: 100
       # 每笔订单最多补发5轮；每轮内部仍按producer-max-attempts重试，0表示禁用补发
       max-republish-retries: 5
-  mq:
-    voucher-order:
-      producer-max-attempts: 3
-      retry-interval: 200ms
-      confirm-timeout: 3s
   cache:
     warmup:
       enabled: false
@@ -84,11 +65,6 @@ hmdp:
       shop-list-ttl: 5m
     mq:
       enabled: true
-      producer-max-attempts: 3
-      consumer-max-attempts: 3
-      retry-interval: 500ms
-      confirm-timeout: 5s
-      queue-expires: 1d
     shop-type:
       # 两类数据分别配置模式，压测时互不影响
       mode: caffeine

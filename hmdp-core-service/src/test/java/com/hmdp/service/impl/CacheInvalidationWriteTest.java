@@ -1,4 +1,4 @@
-package com.hmdp.mq;
+package com.hmdp.service.impl;
 
 import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.ShopType;
@@ -9,19 +9,13 @@ import com.hmdp.mapper.ShopTypeMapper;
 import com.hmdp.mapper.ShopVoucherIndexMapper;
 import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
-import com.hmdp.service.impl.SeckillVoucherServiceImpl;
-import com.hmdp.service.impl.ShopTypeServiceImpl;
-import com.hmdp.service.impl.VoucherOrderServiceImpl;
-import com.hmdp.service.impl.VoucherServiceImpl;
+import com.hmdp.repository.redis.SeckillReservation;
 
 import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
 import com.hmdp.config.VoucherOrderProperties;
-import com.hmdp.entity.*;
-import com.hmdp.mapper.*;
 import com.hmdp.mq.message.CacheInvalidationMessage;
 import com.hmdp.mq.producer.OrderTimeoutPublisher;
 import com.hmdp.service.ISeckillVoucherService;
-import com.hmdp.service.impl.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -118,7 +112,7 @@ class CacheInvalidationWriteTest {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         ValueOperations<String, String> values = mock(ValueOperations.class);
         ReflectionTestUtils.setField(service, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(service, "stringRedisTemplate", redis);
+        ReflectionTestUtils.setField(service, "seckillReservation", new SeckillReservation(redis));
         when(redis.opsForValue()).thenReturn(values);
         when(mapper.insert(any(Voucher.class))).thenReturn(1);
         Voucher voucher = new Voucher().setId(10L).setShopId(1L).setStock(20);
@@ -149,20 +143,23 @@ class CacheInvalidationWriteTest {
     @Test
     void shouldPublishStockChangeOnlyAfterOrderIsSaved() {
         VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
-        ReflectionTestUtils.setField(service, "orderProperties", new VoucherOrderProperties());
-        ReflectionTestUtils.setField(service, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
+        VoucherOrderCreateService creator = new VoucherOrderCreateService();
         VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
         VoucherMapper vouchers = mock(VoucherMapper.class);
         SeckillVoucherMapper seckillMapper = mock(SeckillVoucherMapper.class);
         ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
-        ReflectionTestUtils.setField(service, "baseMapper", orders);
-        com.hmdp.support.OrderRoutingTestSupport.install(service);
-        ReflectionTestUtils.setField(service, "voucherMapper", vouchers);
-        ReflectionTestUtils.setField(service, "eventPublisher", events);
-        ReflectionTestUtils.setField(service, "seckillVoucherService", seckill);
+        // 建单已拆分，门面只负责委托；这里给真实建单组件装配同一组桩。
+        com.hmdp.support.OrderRoutingTestSupport.install(creator);
+        ReflectionTestUtils.setField(service, "voucherOrderCreateService", creator);
+        ReflectionTestUtils.setField(creator, "voucherOrderMapper", orders);
+        ReflectionTestUtils.setField(creator, "voucherMapper", vouchers);
+        ReflectionTestUtils.setField(creator, "eventPublisher", events);
+        ReflectionTestUtils.setField(creator, "seckillVoucherService", seckill);
+        ReflectionTestUtils.setField(creator, "orderProperties", new VoucherOrderProperties());
+        ReflectionTestUtils.setField(creator, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         HashOperations<String, Object, Object> reservations = mock(HashOperations.class);
-        ReflectionTestUtils.setField(service, "stringRedisTemplate", redis);
+        ReflectionTestUtils.setField(creator, "seckillReservation", new SeckillReservation(redis));
         when(redis.opsForHash()).thenReturn(reservations);
         when(redis.opsForZSet()).thenReturn(mock(ZSetOperations.class));
         when(reservations.get("seckill:reservation:10", "5")).thenReturn("100");

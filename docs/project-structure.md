@@ -1,6 +1,8 @@
 # 项目模块与目录
 
-参照 [hmdp-plus](https://gitee.com/java-up-up/hmdp-plus/tree/03594d190275a32d151e5d8b45da24c0f4efbe14) 的“核心业务、公共代码、基础组件、分片接入”划分。当前项目使用四个 Maven 模块，独立编译、单向依赖，最终只启动一个应用。Redis、锁、限流、ID 和 MQ 基础配置按包组织在一个基础组件模块中。
+参照 [hmdp-plus](https://gitee.com/java-up-up/hmdp-plus/tree/03594d190275a32d151e5d8b45da24c0f4efbe14) 的“核心业务、公共代码、基础组件、分片接入”划分。当前项目使用四个 Maven 模块，独立编译、单向依赖，最终只启动一个应用。Redis、锁、限流、ID 和 XXL-JOB 基础配置按包组织在基础组件模块中，业务 MQ 与 RocketMQ 客户端装配放在核心模块。
+
+按照 [Spring Boot 代码组织建议](https://docs.spring.io/spring-boot/reference/using/structuring-your-code.html)，启动类保留在 `com.hmdp` 根包，其他组件位于其子包，组件扫描范围因此保持稳定。核心模块按入口、业务、数据访问和消息适配划分职责，不额外引入只转发调用的接口或模块。
 
 ```text
 hm-dianping/
@@ -19,7 +21,6 @@ hm-dianping/
 │   │   ├── id/                     ID 工具及生成器配置
 │   │   ├── job/config/             XXL-JOB 执行器与连接参数
 │   │   ├── lock/                   Redis 锁及 Redisson 配置
-│   │   ├── mq/config/              RabbitConfig
 │   │   └── ratelimit/              注解、切面、维度与限流异常
 │   └── src/main/resources/         limiter.lua、UnLock.lua
 ├── hmdp-sharding/
@@ -29,18 +30,21 @@ hm-dianping/
 │   ├── src/main/java/com/hmdp/
 │   │   ├── HmDianPingApplication.java
 │   │   ├── controller/             HTTP 入口
-│   │   ├── service/impl/           业务流程、事务与订单状态处理
+│   │   │   └── advice/             HTTP 异常处理
+│   │   ├── service/impl/           业务流程、事务与订单状态处理（支付、关单为订单门面的协作类）
 │   │   ├── entity/                 数据库实体
-│   │   ├── mapper/                 数据访问
+│   │   ├── mapper/                 MyBatis 数据访问
+│   │   ├── repository/redis/       秒杀预占、回退、事务标记与 pending 对账的 Redis 访问
 │   │   ├── cache/                  分类、优惠券缓存、商铺布隆过滤器与展示数据预热
 │   │   │   └── config/             业务缓存参数、延迟双删线程池
 │   │   ├── job/                    预热、pending 对账、超时关单与返库补偿扫描
 │   │   │   ├── config/             调度模式、任务参数与本地调度入口
 │   │   │   └── support/            单轮计数、预算与结果上报
 │   │   ├── mq/
-│   │   │   ├── config/             缓存、订单、超时关单拓扑与参数
+│   │   │   ├── config/             RocketMQ 客户端装配、主题常量与参数
 │   │   │   ├── message/            业务消息
-│   │   │   ├── producer/           业务发布逻辑
+│   │   │   ├── support/            消息体编解码
+│   │   │   ├── producer/           消息发布、事务上下文及回查
 │   │   │   └── consumer/           业务消费入口
 │   │   ├── interceptor/           登录校验与令牌刷新
 │   │   └── config/                Web、MyBatis、JSON 和订单参数
@@ -58,13 +62,15 @@ hm-dianping/
 
 公共模块只产出普通 jar，Spring Boot 打包插件只用于核心模块。现有 `com.hmdp.HmDianPingApplication` 继续扫描 `com.hmdp`，无需额外的自动配置框架。MyBatis 的 `com.hmdp.mapper` 扫描与实体别名包保持不变。
 
-测试使用了真实业务实体和多个组件的组合，因此集中在核心模块；不让基础组件为了复用测试而反向依赖业务模块。
+核心模块中，HTTP 请求由 `controller` 进入 `service`；订单门面保留秒杀受理、查询与失败回退，建单委托给 `VoucherOrderCreateService`，模拟支付与超时关单委托给 `VoucherOrderPaymentService`、`VoucherOrderCloseService`。建单的 `@Transactional` 留在建单类，经 Spring 代理调用以保证消费者持锁期间事务生效；条件更新、事务边界与提交后的 Redis 补偿留在各自实现里。`mapper` 访问 MySQL，`repository.redis.SeckillReservation` 封装秒杀预扣、预占查询、回退、pending 清理和事务标记读取；`SeckillPendingRepository` 封装 pending 扫描、原子领取与补发计数，对账任务通过它访问 Redis。MQ 消费者接收消息并调用业务服务或本地缓存；事务生产者及其回调位于 `mq.producer`。`job` 负责调度、领取与对账编排，复用同一 Redis 预占组件完成查询、回退和清理。
+
+Redis 预占与回退接口接收优惠券、用户和订单标识，不依赖 MQ 消息类；MQ 消息格式仍由 `mq.message` 管理。滚动分页结果使用公共 DTO，Web 异常处理归入 HTTP 层。测试位于核心模块，并尽量与被测组件的包位置对应；基础组件不依赖业务模块。
 
 ## 本次迁移的范围
 
 模块拆分只改变 Maven 归属、包位置、引用及构建文档。原注释以及注释保留的 Redis Stream、阻塞队列和同步下单实现继续保留。后续 XXL-JOB 接入的变更范围单独记录在 [任务调度说明](xxl-job.md)，订单事务、Lua 和 SQL 沿用原实现。
 
-`com.hmdp.mq.message` 中的消息类名保持不变，避免影响 RabbitMQ JSON 消息的类型头。Controller 包名保持不变，基于方法名生成的限流 Key 不变。Redis Key 和数据库字段不改名，不需要迁移已有数据。
+`com.hmdp.mq.message` 中的消息类名保持不变，消息体仍按字段名序列化，历史积压消息可继续反序列化。Controller 包名保持不变，基于方法名生成的限流 Key 不变。Redis Key 和数据库字段不改名，不需要迁移已有数据。
 
 原 `reconcile` 中的任务与配置合并到 `job`、`job.config`。默认仍由 Spring `@Scheduled` 触发；`xxl` 模式停用本地调度，由四个 `@XxlJob` 入口调用业务批处理。执行器的基础配置放在 framework，业务 Handler 留在 core-service，不额外拆分任务微服务。
 

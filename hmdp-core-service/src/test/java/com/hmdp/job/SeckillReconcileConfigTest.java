@@ -3,6 +3,8 @@ package com.hmdp.job;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
+import com.hmdp.repository.redis.SeckillPendingRepository;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.job.config.SeckillReconcileConfig;
 import com.hmdp.job.config.JobProperties;
 import com.hmdp.job.config.SeckillReconcileProperties;
@@ -40,7 +42,8 @@ class SeckillReconcileConfigTest {
         when(redis.opsForZSet()).thenReturn(mock(ZSetOperations.class));
         new ApplicationContextRunner()
                 .withUserConfiguration(BindingConfiguration.class, SeckillReconcileConfig.class,
-                        SeckillReconcileProperties.class, SeckillOrderReconcileJob.class)
+                        SeckillReconcileProperties.class, SeckillOrderReconcileJob.class, SeckillReservation.class,
+                        SeckillPendingRepository.class)
                 .withBean(JobProperties.class, JobProperties::new)
                 .withBean(StringRedisTemplate.class, () -> redis)
                 .withBean(VoucherOrderMapper.class, () -> mock(VoucherOrderMapper.class))

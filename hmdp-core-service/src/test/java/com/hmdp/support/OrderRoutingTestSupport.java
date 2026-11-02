@@ -2,7 +2,6 @@ package com.hmdp.support;
 
 import com.hmdp.entity.VoucherOrderRouter;
 import com.hmdp.mapper.VoucherOrderRouterMapper;
-import com.hmdp.service.impl.VoucherOrderServiceImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -12,8 +11,13 @@ import static org.mockito.Mockito.when;
 public final class OrderRoutingTestSupport {
     private OrderRoutingTestSupport() { }
 
-    public static VoucherOrderRouterMapper install(VoucherOrderServiceImpl service) {
-        VoucherOrderRouterMapper routes = mock(VoucherOrderRouterMapper.class);
+    /** 为订单门面、支付或关单组件注入同一套路由桩。 */
+    public static VoucherOrderRouterMapper install(Object service) {
+        return install(service, mock(VoucherOrderRouterMapper.class));
+    }
+
+    /** 多个组件共享同一个路由桩时，用该重载保证桩只创建一次。 */
+    public static VoucherOrderRouterMapper install(Object service, VoucherOrderRouterMapper routes) {
         ReflectionTestUtils.setField(service, "voucherOrderRouterMapper", routes);
         when(routes.selectById(1000L)).thenReturn(new VoucherOrderRouter()
                 .setOrderId(1000L).setUserId(5L).setVoucherId(10L));

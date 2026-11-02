@@ -30,6 +30,9 @@ import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.service.IVoucherService;
 import com.hmdp.cache.VoucherListCacheService;
 import com.hmdp.service.impl.SeckillVoucherServiceImpl;
+import com.hmdp.service.impl.VoucherOrderCloseService;
+import com.hmdp.service.impl.VoucherOrderCreateService;
+import com.hmdp.service.impl.VoucherOrderPaymentService;
 import com.hmdp.service.impl.VoucherOrderServiceImpl;
 import com.hmdp.service.impl.VoucherServiceImpl;
 import com.hmdp.common.context.UserHolder;
@@ -358,6 +361,9 @@ class ShardingXaIT {
 
         @Bean IVoucherService voucherService() { return new VoucherServiceImpl(); }
         @Bean IVoucherOrderService voucherOrderService() { return new VoucherOrderServiceImpl(); }
+        @Bean VoucherOrderCreateService voucherOrderCreateService() { return new VoucherOrderCreateService(); }
+        @Bean VoucherOrderPaymentService voucherOrderPaymentService() { return new VoucherOrderPaymentService(); }
+        @Bean VoucherOrderCloseService voucherOrderCloseService() { return new VoucherOrderCloseService(); }
         @Bean ISeckillVoucherService seckillVoucherService() { return new SeckillVoucherServiceImpl(); }
         @Bean VoucherOrderProperties orderProperties() { return new VoucherOrderProperties(); }
         @Bean VoucherListCacheService voucherListCacheService() { return mock(VoucherListCacheService.class); }

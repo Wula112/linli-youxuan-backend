@@ -5,10 +5,10 @@ import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.common.dto.Result;
+import com.hmdp.common.dto.ScrollResult;
 import com.hmdp.common.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Follow;
-import com.hmdp.entity.ScrollResult;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
 import com.hmdp.service.IBlogService;
@@ -50,7 +50,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     private IFollowService followService;
 
     @Override
-    public Result queryHotBlog(Integer current) {
+    public Result<List<Blog>> queryHotBlog(Integer current) {
         // 根据用户查询
         Page<Blog> page = query()
                 .orderByDesc("liked")
@@ -66,7 +66,27 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
-    public Result queryBlogById(Long blogId) {
+    public Result<List<Blog>> queryMyBlog(Integer current) {
+        // 获取登录用户
+        UserDTO user = UserHolder.getUser();
+        // 根据用户查询
+        Page<Blog> page = query()
+                .eq("user_id", user.getId()).page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        // 返回当前页数据
+        return Result.ok(page.getRecords());
+    }
+
+    @Override
+    public Result<List<Blog>> queryBlogByUserId(Long userId, Integer current) {
+        // 根据用户查询
+        Page<Blog> page = query()
+                .eq("user_id", userId).page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        // 返回当前页数据
+        return Result.ok(page.getRecords());
+    }
+
+    @Override
+    public Result<Blog> queryBlogById(Long blogId) {
         // 1.根据ID 查博客
         Blog blog = getById(blogId);
         if(blog == null){
@@ -92,7 +112,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
-    public Result likeBlog(Long id) {
+    public Result<Void> likeBlog(Long id) {
         String key = BLOG_LIKED_KEY + id;
         // 1. 判断是否已点过赞
         String userId = UserHolder.getUser().getId().toString();
@@ -116,7 +136,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
-    public Result queryBlogLikes(Long id) {
+    public Result<List<UserDTO>> queryBlogLikes(Long id) {
         // 1. 查询点赞该博客时间 Top5 的用户
         String key = BLOG_LIKED_KEY + id;
         Set<String> top5 = stringRedisTemplate.opsForZSet().range(key, 0, 4);
@@ -139,7 +159,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
-    public Result saveBlog(Blog blog) {
+    public Result<Long> saveBlog(Blog blog) {
         // 获取登录用户
         UserDTO user = UserHolder.getUser();
         blog.setUserId(user.getId());
@@ -162,7 +182,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     @Override
-    public Result queryFollowBlog(Long lastId, Integer offset) {
+    public Result<Object> queryFollowBlog(Long lastId, Integer offset) {
         // 1. 从收件箱中查博客
         Long userId = UserHolder.getUser().getId();
         String key = FEED_KEY + userId;

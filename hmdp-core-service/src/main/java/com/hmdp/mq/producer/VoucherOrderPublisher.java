@@ -1,44 +1,57 @@
 package com.hmdp.mq.producer;
 
-import com.hmdp.mq.config.VoucherOrderMqConfig;
-import com.hmdp.mq.config.VoucherOrderMqProperties;
+import com.hmdp.mq.config.RocketMqConstants;
 import com.hmdp.mq.message.VoucherOrderMessage;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.core.retry.RetryPolicy;
-import org.springframework.core.retry.RetryException;
-import org.springframework.core.retry.RetryTemplate;
+import com.hmdp.mq.support.MqMessageCodec;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.client.exception.MQBrokerException;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.client.producer.SendStatus;
+import org.apache.rocketmq.client.producer.TransactionMQProducer;
+import org.apache.rocketmq.common.message.Message;
+import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.springframework.stereotype.Component;
 
-import java.util.concurrent.TimeUnit;
-
-/** 有限重试并等待发布确认；失败继续抛出，由下单入口协调预扣回退。 */
+/** 秒杀订单消息：下单走事务消息，对账补发走普通消息。 */
+@Slf4j
 @Component
+@RequiredArgsConstructor
 public class VoucherOrderPublisher {
 
-    private final RabbitTemplate rabbitTemplate;
-    private final VoucherOrderMqProperties properties;
-    private final RetryTemplate retryTemplate;
+    private final TransactionMQProducer producer;
 
-    public VoucherOrderPublisher(RabbitTemplate rabbitTemplate, VoucherOrderMqProperties properties) {
-        this.rabbitTemplate = rabbitTemplate;
-        this.properties = properties;
-        retryTemplate = new RetryTemplate(RetryPolicy.builder()
-                .maxRetries(properties.getProducerMaxAttempts() - 1L)
-                .delay(properties.getRetryInterval()).excludes(InterruptedException.class).build());
+    /**
+     * 发送下单事务消息：半消息先落盘，秒杀 Lua 由本地事务执行，成功才 COMMIT。
+     *
+     * <p>返回 Lua 返回码（0 成功、1 库存不足、2 重复下单、-1 未知）。提交结果丢失时由 Broker
+     * 回查事务标记决定消息去留。
+     */
+    public long sendInTransaction(VoucherOrderMessage message) {
+        SeckillTxContext context = new SeckillTxContext(message);
+        try {
+            producer.sendMessageInTransaction(createMessage(message), context);
+        } catch (MQClientException ex) {
+            // 发送或提交确认失败：本地事务已执行时以返回码为准，否则返回 UNKNOWN 由入口回退预扣
+            log.warn("下单事务消息发送异常，orderId={}，本地事务返回码={}",
+                    message.orderId(), context.getResult(), ex);
+        }
+        return context.getResult();
     }
 
-    public void publish(VoucherOrderMessage message) throws RetryException {
-        retryTemplate.execute(() -> {
-            CorrelationData correlation = new CorrelationData();
-            rabbitTemplate.convertAndSend(VoucherOrderMqConfig.EXCHANGE, VoucherOrderMqConfig.ROUTING_KEY,
-                    message, correlation);
-            CorrelationData.Confirm confirm = correlation.getFuture()
-                    .get(properties.getConfirmTimeout().toMillis(), TimeUnit.MILLISECONDS);
-            if (!confirm.ack() || correlation.getReturned() != null) {
-                throw new IllegalStateException("秒杀订单消息未确认或无法路由，orderId=" + message.orderId());
-            }
-            return null;
-        });
+    /** 对账补发：预扣已经存在，只补投普通消息，不再执行 Lua。 */
+    public void publish(VoucherOrderMessage message)
+            throws MQClientException, MQBrokerException, RemotingException, InterruptedException {
+        SendResult result = producer.send(createMessage(message));
+        if (result.getSendStatus() != SendStatus.SEND_OK) {
+            throw new IllegalStateException("秒杀订单消息发送失败，orderId=" + message.orderId()
+                    + "，状态=" + result.getSendStatus());
+        }
+    }
+
+    private Message createMessage(VoucherOrderMessage message) {
+        return new Message(RocketMqConstants.ORDER_TOPIC, RocketMqConstants.ORDER_CREATE_TAG,
+                MqMessageCodec.encode(message));
     }
 }

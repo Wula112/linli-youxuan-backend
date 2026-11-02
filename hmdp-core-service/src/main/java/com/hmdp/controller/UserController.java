@@ -41,7 +41,7 @@ public class UserController {
      * 发送手机验证码
      */
     @PostMapping("code")
-    public Result sendCode(@RequestParam("phone") String phone, HttpSession session) {
+    public Result<Void> sendCode(@RequestParam("phone") String phone, HttpSession session) {
         // 发送短信验证码并保存验证码
         return userService.sendCode(phone,session);
     }
@@ -51,7 +51,7 @@ public class UserController {
      * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
      */
     @PostMapping("/login")
-    public Result login(@RequestBody LoginFormDTO loginForm, HttpSession session){
+    public Result<String> login(@RequestBody LoginFormDTO loginForm, HttpSession session){
         // 实现登录功能
         return userService.login(loginForm,session);
     }
@@ -61,20 +61,20 @@ public class UserController {
      * @return 无
      */
     @PostMapping("/logout")
-    public Result logout(){
+    public Result<Void> logout(){
         // TODO 实现登出功能
         return Result.fail("功能未完成");
     }
 
     @GetMapping("/me")
-    public Result me(){
+    public Result<UserDTO> me(){
         // 获取当前登录的用户并返回
         UserDTO userDTO = UserHolder.getUser();
         return Result.ok(userDTO);
     }
 
     @GetMapping("/info/{id}")
-    public Result info(@PathVariable("id") Long userId){
+    public Result<UserInfo> info(@PathVariable("id") Long userId){
         // 查询详情
         UserInfo info = userInfoService.getById(userId);
         if (info == null) {
@@ -88,7 +88,7 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
-    public Result queryUserById(@PathVariable("id") Long userId){
+    public Result<UserDTO> queryUserById(@PathVariable("id") Long userId){
         // 查询详情
         User user = userService.getById(userId);
         if (user == null) {
@@ -100,12 +100,12 @@ public class UserController {
     }
 
     @PostMapping("/sign")
-    public Result sign(){
+    public Result<Void> sign(){
         return userService.sign();
     }
 
     @GetMapping("/sign/count")
-    public Result signCount(){
+    public Result<Integer> signCount(){
         return userService.signCount();
     }
 

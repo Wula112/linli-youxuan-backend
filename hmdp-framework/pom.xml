@@ -19,11 +19,7 @@
             <groupId>com.hmdp</groupId>
             <artifactId>hmdp-common</artifactId>
         </dependency>
-        <!-- 缓存失效广播与秒杀订单异步处理 -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-amqp</artifactId>
-        </dependency>
+        <!-- 缓存失效广播与秒杀订单异步处理由 hmdp-core-service 的 RocketMQ 客户端承担 -->
         <dependency>
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

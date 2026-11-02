@@ -14,6 +14,7 @@ import com.hmdp.mq.message.CacheInvalidationMessage;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
 import com.hmdp.mq.producer.OrderTimeoutPublisher;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.ISeckillVoucherService;
 import com.baomidou.mybatisplus.core.incrementer.IdentifierGenerator;
 import com.hmdp.common.context.UserHolder;
@@ -23,12 +24,12 @@ import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.core.retry.RetryException;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -43,6 +44,7 @@ import static org.mockito.Mockito.*;
 class VoucherOrderServiceImplTest {
 
     private final VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
+    private final VoucherOrderCreateService creator = new VoucherOrderCreateService();
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
     private final VoucherMapper vouchers = mock(VoucherMapper.class);
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
@@ -55,24 +57,30 @@ class VoucherOrderServiceImplTest {
     private final ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
     private final SeckillVoucherMapper stocks = mock(SeckillVoucherMapper.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final List<String> keys = List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending",
-            "seckill:pending:retries");
+    private final List<String> rollbackKeys = List.of("seckill:stock:10", "seckill:reservation:10",
+            "seckill:pending", "seckill:pending:retries");
     private final List<String> clearKeys = List.of("seckill:pending", "seckill:pending:retries");
     private final VoucherOrderMessage message = new VoucherOrderMessage(1000L, 5L, 10L);
 
     @BeforeEach
     void setUp() {
+        SeckillReservation reservation = new SeckillReservation(redis);
         ReflectionTestUtils.setField(service, "baseMapper", orders);
-        com.hmdp.support.OrderRoutingTestSupport.install(service);
-        ReflectionTestUtils.setField(service, "voucherMapper", vouchers);
-        ReflectionTestUtils.setField(service, "stringRedisTemplate", redis);
+        var routes = com.hmdp.support.OrderRoutingTestSupport.install(service);
+        ReflectionTestUtils.setField(service, "seckillReservation", reservation);
         ReflectionTestUtils.setField(service, "voucherOrderPublisher", publisher);
         ReflectionTestUtils.setField(service, "identifierGenerator", ids);
         ReflectionTestUtils.setField(service, "redissonClient", redisson);
-        ReflectionTestUtils.setField(service, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(service, "eventPublisher", events);
-        ReflectionTestUtils.setField(service, "orderProperties", new VoucherOrderProperties());
-        ReflectionTestUtils.setField(service, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
+        // 建单已拆分：测试仍从门面调用，由门面委托到真实建单组件。
+        ReflectionTestUtils.setField(service, "voucherOrderCreateService", creator);
+        ReflectionTestUtils.setField(creator, "voucherOrderMapper", orders);
+        ReflectionTestUtils.setField(creator, "voucherOrderRouterMapper", routes);
+        ReflectionTestUtils.setField(creator, "voucherMapper", vouchers);
+        ReflectionTestUtils.setField(creator, "seckillReservation", reservation);
+        ReflectionTestUtils.setField(creator, "seckillVoucherService", seckill);
+        ReflectionTestUtils.setField(creator, "eventPublisher", events);
+        ReflectionTestUtils.setField(creator, "orderProperties", new VoucherOrderProperties());
+        ReflectionTestUtils.setField(creator, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
         UserDTO user = new UserDTO();
         user.setId(5L);
         UserHolder.saveUser(user);
@@ -91,62 +99,79 @@ class VoucherOrderServiceImplTest {
     }
 
     @Test
-    void shouldReserveAndPublishWithoutWritingDatabaseOnRequestThread() throws Exception {
-        reservationResults(0L);
+    void shouldReserveAndSendTransactionMessageWithoutWritingDatabaseOnRequestThread() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.SUCCESS);
+
         Result result = service.secKillVoucher(10L);
+
         assertTrue(result.getSuccess());
         assertEquals(1000L, result.getData());
-        var sequence = inOrder(redis, publisher);
-        sequence.verify(redis).execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10"), anyString());
-        sequence.verify(publisher).publish(message);
+        verify(publisher).sendInTransaction(message);
+        verify(redis, never()).execute(any(RedisScript.class), anyList(), any(Object[].class));
         verifyNoInteractions(orders, seckill);
     }
 
     @Test
-    void shouldNotPublishIfStockIsInsufficient() throws Exception {
-        reservationResults(1L);
+    void shouldNotWriteDatabaseWhenStockIsInsufficient() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.STOCK_EMPTY);
+
         assertFalse(service.secKillVoucher(10L).getSuccess());
-        verifyNoInteractions(publisher, orders);
+
+        verifyNoInteractions(orders);
     }
 
     @Test
-    void shouldNotPublishDuplicatePurchase() throws Exception {
-        reservationResults(2L);
+    void shouldReportDuplicatePurchase() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.DUPLICATE);
+
         assertEquals("一人只能购买一单", service.secKillVoucher(10L).getErrorMsg());
-        verifyNoInteractions(publisher);
+
+        verifyNoInteractions(orders);
     }
 
     @Test
-    void shouldRollbackOwnedReservationIfPublicationFails() throws Exception {
-        reservationResults(0L, 1L);
-        doThrow(new RetryException("send failed", new IllegalStateException())).when(publisher).publish(message);
-        Result result = service.secKillVoucher(10L);
-        assertFalse(result.getSuccess());
-        verify(redis).execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10"), anyString());
-        verify(redis).execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10:5:1000"));
+    void shouldRollbackOwnedReservationWhenLocalTransactionIsUnknown() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
+
+        assertFalse(service.secKillVoucher(10L).getSuccess());
+
+        verify(redis).execute(any(RedisScript.class), eq(rollbackKeys), eq("5"), eq("1000"), eq("10:5:1000"));
         verify(lock).unlock();
     }
 
     @Test
-    void shouldNotRestoreStockIfOrderAlreadyCommittedDespiteMissingConfirm() throws Exception {
-        reservationResults(0L);
-        doThrow(new RetryException("confirm lost", new IllegalStateException())).when(publisher).publish(message);
+    void shouldNotRestoreStockIfOrderAlreadyCommitted() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
         when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(order());
+
         Result result = service.secKillVoucher(10L);
+
         assertTrue(result.getSuccess());
-        verify(redis).execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10"), anyString());
+        verify(redis, never()).execute(any(RedisScript.class), eq(rollbackKeys), anyString(), anyString(),
+                anyString());
     }
 
     @Test
-    void shouldKeepReservationWhenConsumerHoldsLock() throws Exception {
-        reservationResults(0L);
+    void shouldKeepReservationWhenConsumerHoldsLock() {
+        when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
         when(lock.tryLock()).thenReturn(false);
-        doThrow(new RetryException("confirm lost", new IllegalStateException())).when(publisher).publish(message);
+
         Result result = service.secKillVoucher(10L);
+
         assertFalse(result.getSuccess());
         assertTrue(result.getErrorMsg().contains("1000"));
-        verify(redis).execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10"), anyString());
         verify(lock, never()).unlock();
+    }
+
+    @Test
+    void shouldKeepCreateTransactionOnDedicatedComponent() throws Exception {
+        var method = VoucherOrderCreateService.class.getMethod("createVoucherOrder", VoucherOrder.class);
+        var transactional = method.getAnnotation(Transactional.class);
+        assertNotNull(transactional);
+        assertArrayEquals(new Class<?>[]{Exception.class}, transactional.rollbackFor());
+        // 门面只做委托，事务注解不应放回门面，避免两处维护同一事务边界。
+        assertNull(service.getClass().getMethod("createVoucherOrder", VoucherOrder.class)
+                .getAnnotation(Transactional.class));
     }
 
     @Test
@@ -230,14 +255,6 @@ class VoucherOrderServiceImplTest {
         when(orders.insert(any(VoucherOrder.class))).thenReturn(0);
         assertThrows(IllegalStateException.class, () -> service.createVoucherOrder(order()));
         verifyNoInteractions(events);
-    }
-
-    private void reservationResults(Long first, Long... subsequent) {
-        when(redis.execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10"), anyString())).thenReturn(first);
-        if (subsequent.length > 0) {
-            when(redis.execute(any(RedisScript.class), eq(keys), eq("5"), eq("1000"), eq("10:5:1000")))
-                    .thenReturn(subsequent[0]);
-        }
     }
 
     @Test

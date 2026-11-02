@@ -28,6 +28,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- RocketMQ：秒杀事务消息、延迟关单与缓存失效广播 -->
+        <dependency>
+            <groupId>org.apache.rocketmq</groupId>
+            <artifactId>rocketmq-client</artifactId>
+        </dependency>
         <!-- MyBatis Plus：Spring Boot 4 -->
         <dependency>
             <groupId>com.baomidou</groupId>

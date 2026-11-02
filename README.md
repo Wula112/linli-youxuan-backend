@@ -9,11 +9,11 @@
 | 模块 | 职责 |
 | --- | --- |
 | `hmdp-common` | 共享 DTO、常量、订单状态、用户上下文与普通工具 |
-| `hmdp-framework` | 通用缓存工具、Redis 锁、限流、ID 生成、RabbitMQ 与 XXL-JOB 基础配置 |
+| `hmdp-framework` | 通用缓存工具、Redis 锁、限流、ID 生成与 XXL-JOB 基础配置 |
 | `hmdp-sharding` | ShardingSphere 数据源及 XA 接入 |
 | `hmdp-core-service` | 启动类、接口、业务服务、实体、Mapper、业务缓存、定时任务与业务 MQ |
 
-依赖方向为 `core-service → framework → common`、`core-service → common` 和 `core-service → sharding`。业务拓扑、消息、生产者、消费者仍集中在核心模块的 `mq/`，通用 `RabbitConfig` 位于基础组件模块。缓存放在 `cache/`，预热、对账和关单任务统一放在 `job/`。
+依赖方向为 `core-service → framework → common`、`core-service → common` 和 `core-service → sharding`。核心模块中，`controller/` 是 HTTP 入口，`service/` 负责业务，`mapper/` 和 `repository/redis/` 分别负责数据库和 Redis 数据访问；消息适配放在 `mq/`，缓存放在 `cache/`，预热、对账和关单任务放在 `job/`。
 
 配置、Mapper XML、业务 Lua 和数据库脚本位于 `hmdp-core-service/src/main/resources`；通用限流和锁 Lua 位于 `hmdp-framework/src/main/resources`。回归测试集中在核心模块，覆盖业务与基础组件的组合行为。
 
@@ -21,7 +21,7 @@
 
 ## 开发环境
 
-当前 `pom.xml` 配置为 Java 21、Spring Boot 4.1.1、MyBatis-Plus 3.5.17 和 Redisson 4.7.0，使用 Maven 构建。运行前需要准备 MySQL 和支持 Streams 的 Redis。
+当前 `pom.xml` 配置为 Java 21、Spring Boot 4.1.1、MyBatis-Plus 3.5.17 和 Redisson 4.7.0，使用 Maven 构建。运行前需要准备 MySQL、Redis 和 RocketMQ 5.x（事务消息与定时消息）。
 
 ## 本地运行
 
@@ -43,7 +43,7 @@
 
 3. 启动本地 Redis。当前 `RedissonConfig.java` 单独配置了 `redis://127.0.0.1:6379`；如果更换 Redis 地址或启用认证，需要同步调整该配置与 Spring Redis 配置。
 
-4. 启动 RabbitMQ。当前秒杀异步下单与缓存失效使用 RabbitMQ，已不需要创建旧 Redis Stream 消费者组。
+4. 启动 RocketMQ 5.x（NameServer 默认 `127.0.0.1:9876`）。当前秒杀异步下单使用事务消息，缓存失效使用广播主题，已不需要创建旧 Redis Stream 消费者组。
 
 5. 图片上传目录在 `hmdp-common/src/main/java/com/hmdp/common/constant/SystemConstants.java` 的 `IMAGE_UPLOAD_DIR` 中定义。使用图片上传功能前，将其调整为本机图片目录，并配置静态文件服务。
 
@@ -127,17 +127,17 @@ java -jar hmdp-core-service/target/hm-dianping-0.0.1-SNAPSHOT.jar --hmdp.cache.s
 
 以上命令分别用于不同次启动，也可以只覆盖其中一个模式。对比热缓存吞吐量时，先用分类接口和相同商铺 ID 预热，再开始计量；冷缓存回源单独测量。`mysql` 模式仅切换对应列表的查询路径，应用其他模块、启动初始化及携带登录令牌的请求仍可能访问 Redis。
 
-分类和优惠券列表接入 RabbitMQ 广播失效：事务提交成功后先删 Redis，再向 fanout exchange 发布消息；每个实例独立队列，消费后仅删除该实例的 Caffeine，成功手动 ACK，失败重试，耗尽后拒绝消息进入死信队列。启动前准备 RabbitMQ，无需新增数据库表或触发器。
+分类和优惠券列表接入 RocketMQ 广播失效：事务提交成功后先删 Redis，再向 `hmdp-cache-invalidation` 主题发布消息；每个实例一个消费者组，消费后仅删除该实例的 Caffeine，成功返回 `CONSUME_SUCCESS`，失败重投，耗尽后进入死信主题。启动前准备 RocketMQ 5.x，无需新增数据库表或触发器。
 
-业务 MQ 代码集中在 `com.hmdp.mq`，通用配置位于 `com.hmdp.framework.mq.config`，包括配置、失效消息、事务提交后的发布者和消费者。发布端使用 Spring AMQP 的 `JacksonJsonMessageConverter` 序列化消息，通过 `RabbitTemplate.convertAndSend()` 发送，并用 Spring 7 `RetryTemplate` 统一处理有限重试；同时保留 Confirm、Returns。`hmdp.cache.mq.enabled: false` 可关闭失效广播进行基线压测。接入方法、配置和一致性边界见 [缓存一致性说明](docs/cache-consistency.md)。
+业务 MQ 代码集中在 `com.hmdp.mq`，包括主题常量、客户端装配、失效消息、事务提交后的发布者和消费者。发布端用 `tools.jackson` 序列化消息体，通过 `TransactionMQProducer.send()` 发送并检查 `SendStatus`，重试由客户端的 `retry-times-when-send-failed` 控制。`hmdp.cache.mq.enabled: false` 可关闭失效广播进行基线压测。接入方法、配置和一致性边界见 [缓存一致性说明](docs/cache-consistency.md)。
 
 优惠券列表仍包含库存和活动时间，秒杀扣减沿用现有 Redis Lua 流程；列表库存的同步以 MySQL 已提交的库存为准。
 
-## RabbitMQ 秒杀异步下单
+## RocketMQ 秒杀异步下单（事务消息）
 
-秒杀请求先通过 Redis Lua 校验一人一单并预扣库存，随后发布订单消息；数据库库存扣减和订单创建由 RabbitMQ 消费者在同一事务中完成。入口返回的订单号代表请求已受理。订单使用 Direct Exchange 和共享队列竞争消费，消费者成功后 AUTO ACK，失败有限重试并进入死信队列。
+秒杀请求先发送事务半消息，Broker 落盘后在本地事务中执行 Redis Lua（校验一人一单、预扣库存、写事务标记）；Lua 返回 0 才 COMMIT 该消息，库存不足或重复下单则 ROLLBACK 丢弃。数据库库存扣减和订单创建由消费者在同一事务中完成，入口返回的订单号代表请求已受理。多个实例共享一个消费者组竞争消费，成功后返回 `CONSUME_SUCCESS`，失败重投并最终进入死信主题；本地事务结果未知时由 Broker 回查事务标记决定半消息去留。
 
-缓存与订单共用 `RabbitConfig` 中的 JSON 转换器和 RabbitTemplate，拓扑分别位于 `CacheMqConfig`、`VoucherOrderMqConfig`。发布失败的预扣回退与消费共用订单锁，并按订单号校验预扣归属；重复消息不会再次扣库存。原有 Redis Stream 消费线程、pending-list、阻塞队列及同步下单历史代码和 Lua XADD 均注释保留，当前启用新增的 RabbitMQ 实现。
+本地事务与回查位于 `mq/producer/`，预扣脚本和事务标记操作封装在 `repository/redis/SeckillReservation`。重复消息不会再次扣库存；结果未知时的预扣回退与消费共用订单锁，并按订单号校验预占归属。原有 Redis Stream 消费线程、pending-list、阻塞队列及同步下单历史代码和 Lua XADD 均注释保留，当前启用新增的 RocketMQ 事务消息实现。
 
 已有数据库需要按升级说明配置订单唯一索引；当前使用未关闭订单唯一约束，允许关闭后再次抢购。切换前先处理完旧 Stream 的积压和 pending-list。配置、升级脚本、验证方式和故障边界见 [秒杀异步下单说明](docs/voucher-order-mq.md)。
 
@@ -151,7 +151,7 @@ java -jar hmdp-core-service/target/hm-dianping-0.0.1-SNAPSHOT.jar --hmdp.cache.s
 
 ## 订单支付与自动关单
 
-订单创建后默认15分钟内允许本人模拟支付，超时由RabbitMQ固定消息TTL + DLX触发关闭，数据库扫描补齐漏通知和未完成的Redis返库。关闭后返还库存并释放本订单资格，允许原用户再次抢购，历史订单保留。MQ配置、消息、生产者和消费者仍分别归入现有mq目录。
+订单创建后默认15分钟内允许本人模拟支付，超时由 RocketMQ 定时消息（按支付超时精确投递）触发关闭，数据库扫描补齐漏通知和未完成的Redis返库。关闭后返还库存并释放本订单资格，允许原用户再次抢购，历史订单保留。MQ配置、消息、生产者和消费者仍分别归入现有mq目录。
 
 升级前按顺序执行支付截止时间及超时关单的增量SQL，新唯一约束只限制未关闭订单。配置、模拟支付接口和测试方式见[支付说明](docs/voucher-order-payment.md)与[自动关单说明](docs/voucher-order-timeout.md)。
 

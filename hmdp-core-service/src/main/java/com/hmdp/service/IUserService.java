@@ -16,10 +16,10 @@ import jakarta.servlet.http.HttpSession;
  * @since 2021-12-22
  */
 public interface IUserService extends IService<User> {
-    Result sendCode(String phone, HttpSession session);
-    Result login(LoginFormDTO loginForm, HttpSession session);
+    Result<Void> sendCode(String phone, HttpSession session);
+    Result<String> login(LoginFormDTO loginForm, HttpSession session);
 
-    Result sign();
+    Result<Void> sign();
 
-    Result signCount();
+    Result<Integer> signCount();
 }

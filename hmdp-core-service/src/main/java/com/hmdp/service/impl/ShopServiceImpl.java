@@ -63,7 +63,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
 
     @Override
-    public Result queryById(Long id) {
+    public Result<Shop> queryById(Long id) {
         if (id == null || id <= 0) {
             return Result.fail("商铺不存在!");
         }
@@ -290,7 +290,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     @Transactional
-    public Result update(Shop shop) {
+    public Result<Void> update(Shop shop) {
         // 1. 查询数据库中是否有该商铺
         Long id = shop.getId();
         // 2. 有则更新，无则返回报错
@@ -334,7 +334,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     @Override
-    public Result queryShopByType(Integer typeId, Integer current, Double x, Double y) {
+    public Result<List<Shop>> queryShopByName(String name, Integer current) {
+        // 名称条件允许为空；分页大小与排序沿用原Controller中的实现。
+        Page<Shop> page = query()
+                .like(StrUtil.isNotBlank(name), "name", name)
+                .orderByAsc("id")
+                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+        return Result.ok(page.getRecords());
+    }
+
+    @Override
+    public Result<List<Shop>> queryShopByType(Integer typeId, Integer current, Double x, Double y) {
         // 1. 先判断传过来的有没有经纬度
         if(x == null || y == null){
             Page<Shop> shops = query().eq("type_id", typeId)
