@@ -3,20 +3,16 @@ package com.hmdp.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hmdp.common.enums.VoucherOrderStatus;
 import com.hmdp.config.VoucherOrderProperties;
-import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.entity.VoucherOrderRouter;
-import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mapper.VoucherOrderRouterMapper;
-import com.hmdp.mq.message.CacheInvalidationMessage;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.OrderTimeoutPublisher;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.ISeckillVoucherService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -44,12 +40,6 @@ public class VoucherOrderCreateService {
 
     @Resource
     private ISeckillVoucherService seckillVoucherService;
-
-    @Resource
-    private VoucherMapper voucherMapper;
-
-    @Resource
-    private ApplicationEventPublisher eventPublisher;
 
     @Resource
     private SeckillReservation seckillReservation;
@@ -110,11 +100,8 @@ public class VoucherOrderCreateService {
                 .setUserId(voucherOrder.getUserId()).setVoucherId(voucherOrder.getVoucherId())) != 1) {
             throw new IllegalStateException("订单路由保存失败，orderId=" + voucherOrder.getId());
         }
-        Voucher voucher = voucherMapper.selectById(voucherOrder.getVoucherId());
-        // 发送本地缓存失效消息
-        if (voucher != null) {
-            eventPublisher.publishEvent(CacheInvalidationMessage.voucherList(voucher.getShopId()));
-        }
+        // 券列表缓存只保存元数据，库存由查询时从 seckill:stock:{voucherId} 读取，
+        // 所以建单不再发布缓存失效消息；详见 docs/cache-consistency.md。
         clearPendingAfterCommit(voucherOrder);
         orderTimeoutPublisher.publishAfterCommit(voucherOrder.getId());
     }

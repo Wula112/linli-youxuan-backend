@@ -4,13 +4,10 @@ import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
 import com.hmdp.common.dto.Result;
 import com.hmdp.config.VoucherOrderProperties;
 import com.hmdp.common.dto.UserDTO;
-import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.common.enums.VoucherOrderStatus;
 import com.hmdp.mapper.SeckillVoucherMapper;
-import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
-import com.hmdp.mq.message.CacheInvalidationMessage;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
 import com.hmdp.mq.producer.OrderTimeoutPublisher;
@@ -46,7 +43,6 @@ class VoucherOrderServiceImplTest {
     private final VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
     private final VoucherOrderCreateService creator = new VoucherOrderCreateService();
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
-    private final VoucherMapper vouchers = mock(VoucherMapper.class);
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private final HashOperations<String, Object, Object> reservations = mock(HashOperations.class);
     private final ZSetOperations<String, String> pending = mock(ZSetOperations.class);
@@ -75,10 +71,8 @@ class VoucherOrderServiceImplTest {
         ReflectionTestUtils.setField(service, "voucherOrderCreateService", creator);
         ReflectionTestUtils.setField(creator, "voucherOrderMapper", orders);
         ReflectionTestUtils.setField(creator, "voucherOrderRouterMapper", routes);
-        ReflectionTestUtils.setField(creator, "voucherMapper", vouchers);
         ReflectionTestUtils.setField(creator, "seckillReservation", reservation);
         ReflectionTestUtils.setField(creator, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(creator, "eventPublisher", events);
         ReflectionTestUtils.setField(creator, "orderProperties", new VoucherOrderProperties());
         ReflectionTestUtils.setField(creator, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
         UserDTO user = new UserDTO();
@@ -175,13 +169,14 @@ class VoucherOrderServiceImplTest {
     }
 
     @Test
-    void shouldDeductStockAndCreateOrderThenPublishCacheEvent() {
+    void shouldDeductStockAndCreateOrderWithoutPublishingCacheEvent() {
         databaseWritesSucceed();
         service.createVoucherOrder(order());
-        var sequence = inOrder(stocks, orders, events);
+        var sequence = inOrder(stocks, orders);
         sequence.verify(stocks).update(isNull(), any());
         sequence.verify(orders).insert(any(VoucherOrder.class));
-        sequence.verify(events).publishEvent(CacheInvalidationMessage.voucherList(1L));
+        // 库存展示读 seckill:stock:*，建单不再触发券列表缓存失效。
+        verifyNoInteractions(events);
     }
 
     @Test
@@ -302,7 +297,6 @@ class VoucherOrderServiceImplTest {
         when(seckill.update()).thenReturn(new UpdateChainWrapper<>(stocks));
         when(stocks.update(isNull(), any())).thenReturn(1);
         when(orders.insert(any(VoucherOrder.class))).thenReturn(1);
-        when(vouchers.selectById(10L)).thenReturn(new Voucher().setShopId(1L));
     }
 
     private VoucherOrder order() {

@@ -19,6 +19,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -82,6 +83,7 @@ class VoucherListCacheServiceTest {
         List<Voucher> vouchers = List.of(voucher);
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.get(CACHE_SHOP_VOUCHER_KEY + 1L)).thenReturn(JSONUtil.toJsonStr(vouchers));
+        when(valueOperations.multiGet(List.of(SECKILL_STOCK_KEY + 10L))).thenReturn(List.of("20"));
 
         assertEquals(vouchers, cacheService.getVoucherByShopId(1L));
         assertEquals(vouchers, cacheService.getVoucherByShopId(1L));
@@ -90,6 +92,61 @@ class VoucherListCacheServiceTest {
         verify(valueOperations, times(1)).get(CACHE_SHOP_VOUCHER_KEY + 1L);
         verifyNoInteractions(voucherMapper);
         verify(valueOperations, never()).set(anyString(), anyString(), any(Expiration.class));
+    }
+
+    @Test
+    void shouldReadStockFromSeckillCounterInsteadOfCachedDatabaseValue() {
+        Voucher voucher = new Voucher().setId(10L).setShopId(1L).setStock(20);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(CACHE_SHOP_VOUCHER_KEY + 1L))
+                .thenReturn(JSONUtil.toJsonStr(List.of(voucher)));
+        when(valueOperations.multiGet(List.of(SECKILL_STOCK_KEY + 10L))).thenReturn(List.of("7"));
+
+        List<Voucher> first = cacheService.getVoucherByShopId(1L);
+        List<Voucher> second = cacheService.getVoucherByShopId(1L);
+
+        assertEquals(Integer.valueOf(7), first.getFirst().getStock());
+        assertEquals(Integer.valueOf(7), second.getFirst().getStock());
+        // L1 只回源一次，库存每次读取都走 Redis。
+        verify(valueOperations, times(1)).get(CACHE_SHOP_VOUCHER_KEY + 1L);
+        verify(valueOperations, times(2)).multiGet(List.of(SECKILL_STOCK_KEY + 10L));
+        // Redis 库存只写进返回副本，不污染 Caffeine 里保存的数据库值。
+        assertEquals(Integer.valueOf(20), cachedVouchers().getFirst().getStock());
+    }
+
+    @Test
+    void shouldFallBackToDatabaseStockWhenSeckillCounterIsMissing() {
+        Voucher voucher = new Voucher().setId(10L).setShopId(1L).setStock(20);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(CACHE_SHOP_VOUCHER_KEY + 1L))
+                .thenReturn(JSONUtil.toJsonStr(List.of(voucher)));
+        when(valueOperations.multiGet(List.of(SECKILL_STOCK_KEY + 10L)))
+                .thenReturn(Collections.singletonList(null));
+
+        assertEquals(Integer.valueOf(20), cacheService.getVoucherByShopId(1L).getFirst().getStock());
+    }
+
+    @Test
+    void shouldFallBackToDatabaseStockWhenSeckillCounterReadFails() {
+        Voucher voucher = new Voucher().setId(10L).setShopId(1L).setStock(20);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(CACHE_SHOP_VOUCHER_KEY + 1L))
+                .thenReturn(JSONUtil.toJsonStr(List.of(voucher)));
+        when(valueOperations.multiGet(List.of(SECKILL_STOCK_KEY + 10L)))
+                .thenThrow(new IllegalStateException("redis unavailable"));
+
+        assertEquals(Integer.valueOf(20), cacheService.getVoucherByShopId(1L).getFirst().getStock());
+    }
+
+    @Test
+    void shouldNotReadSeckillStockForOrdinaryVouchers() {
+        List<Voucher> vouchers = List.of(new Voucher().setId(10L).setShopId(1L).setTitle("代金券"));
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(CACHE_SHOP_VOUCHER_KEY + 1L)).thenReturn(JSONUtil.toJsonStr(vouchers));
+
+        assertEquals(vouchers, cacheService.getVoucherByShopId(1L));
+
+        verify(valueOperations, never()).multiGet(anyList());
     }
 
     @Test
@@ -294,5 +351,10 @@ class VoucherListCacheServiceTest {
             allowDatabaseResult.countDown();
             readers.shutdownNow();
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Voucher> cachedVouchers() {
+        return (List<Voucher>) voucherListCache.getIfPresent(1L);
     }
 }

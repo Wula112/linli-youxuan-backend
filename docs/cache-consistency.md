@@ -41,7 +41,8 @@ com.hmdp.mq
 - `VoucherServiceImpl.save / updateById / removeById`：覆盖普通券新增；更新所属商铺时同时失效新旧商铺。
 - `VoucherServiceImpl.addSeckillVoucher`：复用 save 发布事件，直到券、秒杀信息和原有库存初始化流程所在的事务提交后才执行失效。
 - `SeckillVoucherServiceImpl.updateById`：修改库存或活动时间后失效所属商铺列表。
-- `VoucherOrderServiceImpl.createVoucherOrder`：MySQL 扣库存并保存订单后发布事件，事务提交后失效列表。
+
+订单建单和超时关单不发布失效消息：库存不进入列表缓存，见下一节。
 
 没有使用通用 SQL 拦截器。新增批量、链式更新、Mapper 直写等入口时，需要在对应事务内显式发布事件；直接修改数据库不会产生通知。例如：
 
@@ -53,6 +54,17 @@ public void updateSomething(...) {
     // 分类使用 CacheInvalidationMessage.shopType()
 }
 ```
+
+## 库存不进入列表缓存
+
+优惠券列表缓存只保存券的元数据（标题、规则、金额、状态、活动时间）。`stock` 是随下单持续变化的计数器：查询时按券 ID 批量读取 `seckill:stock:{voucherId}`（与预扣、回退同一个 Key）覆盖，Key 缺失或读取失败时回退数据库值。
+
+因此：
+
+- 建单、超时关单、对账回补都不发布缓存失效消息，也不删除券列表缓存。
+- 列表展示的是预扣后的可售库存，可能比 MySQL 账本更早归零；这与“现在还能不能买到”的口径一致。
+- 每次列表读取多一次 `MGET`；`mysql` 模式仍只查库，不访问 Redis。
+- 缓存条目里仍保留数据库库存，但只作为 Key 缺失时的兜底值，正常路径不会返回它。
 
 ## 配置
 
@@ -87,4 +99,4 @@ hmdp:
 mvn "-Dtest=*Test" test
 ```
 
-单元测试无需连接业务 MySQL、Redis 或 RocketMQ，覆盖提交后发送、回滚不发送、Redis 删除先于发布、发送失败不影响已提交事务、消费成功与重投分支，以及非法消息体跳过。
+单元测试无需连接业务 MySQL、Redis 或 RocketMQ，覆盖提交后发送、回滚不发送、Redis 删除先于发布、发送失败不影响已提交事务、消费成功与重投分支，以及非法消息体跳过。券列表读取还会验证：Redis 库存覆盖数据库快照、Redis 缺 Key 或读取失败时回退数据库值、普通券不访问库存 Key。

@@ -1,17 +1,13 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.common.enums.VoucherOrderStatus;
-import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.entity.VoucherOrderRouter;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mapper.VoucherOrderRouterMapper;
-import com.hmdp.mapper.VoucherMapper;
-import com.hmdp.mq.message.CacheInvalidationMessage;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.ISeckillVoucherService;
 import jakarta.annotation.Resource;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -35,12 +31,6 @@ public class VoucherOrderCloseService {
 
     @Resource
     private ISeckillVoucherService seckillVoucherService;
-
-    @Resource
-    private VoucherMapper voucherMapper;
-
-    @Resource
-    private ApplicationEventPublisher eventPublisher;
 
     @Resource
     private SeckillReservation seckillReservation;
@@ -67,10 +57,7 @@ public class VoucherOrderCloseService {
                         .eq("voucher_id", order.getVoucherId()).update()) {
                     throw new IllegalStateException("关单返还数据库库存失败，orderId=" + orderId);
                 }
-                Voucher voucher = voucherMapper.selectById(order.getVoucherId());
-                if (voucher != null) {
-                    eventPublisher.publishEvent(CacheInvalidationMessage.voucherList(voucher.getShopId()));
-                }
+                // 库存展示读取 seckill:stock:*，Redis 返库成功后自动恢复，无需失效券列表缓存。
             }
             // 重复消息也可以继续完成此前中断的Redis补偿；已支付、未到期或不存在则跳过。
             if (order == null || !Integer.valueOf(VoucherOrderStatus.CLOSED.getCode()).equals(order.getStatus())

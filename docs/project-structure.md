@@ -1,7 +1,5 @@
 # 项目模块与目录
 
-参照 [hmdp-plus](https://gitee.com/java-up-up/hmdp-plus/tree/03594d190275a32d151e5d8b45da24c0f4efbe14) 的“核心业务、公共代码、基础组件、分片接入”划分。当前项目使用四个 Maven 模块，独立编译、单向依赖，最终只启动一个应用。Redis、锁、限流、ID 和 XXL-JOB 基础配置按包组织在基础组件模块中，业务 MQ 与 RocketMQ 客户端装配放在核心模块。
-
 按照 [Spring Boot 代码组织建议](https://docs.spring.io/spring-boot/reference/using/structuring-your-code.html)，启动类保留在 `com.hmdp` 根包，其他组件位于其子包，组件扫描范围因此保持稳定。核心模块按入口、业务、数据访问和消息适配划分职责，不额外引入只转发调用的接口或模块。
 
 ```text

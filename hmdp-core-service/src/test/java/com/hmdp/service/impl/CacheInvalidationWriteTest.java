@@ -3,25 +3,18 @@ package com.hmdp.service.impl;
 import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.ShopType;
 import com.hmdp.entity.Voucher;
-import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.ShopTypeMapper;
 import com.hmdp.mapper.ShopVoucherIndexMapper;
 import com.hmdp.mapper.VoucherMapper;
-import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.repository.redis.SeckillReservation;
 
-import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
-import com.hmdp.config.VoucherOrderProperties;
 import com.hmdp.mq.message.CacheInvalidationMessage;
-import com.hmdp.mq.producer.OrderTimeoutPublisher;
 import com.hmdp.service.ISeckillVoucherService;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
-import org.springframework.data.redis.core.HashOperations;
-import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -138,44 +131,6 @@ class CacheInvalidationWriteTest {
         assertTrue(service.updateById(update));
 
         verify(events).publishEvent(CacheInvalidationMessage.voucherList(1L));
-    }
-
-    @Test
-    void shouldPublishStockChangeOnlyAfterOrderIsSaved() {
-        VoucherOrderServiceImpl service = new VoucherOrderServiceImpl();
-        VoucherOrderCreateService creator = new VoucherOrderCreateService();
-        VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
-        VoucherMapper vouchers = mock(VoucherMapper.class);
-        SeckillVoucherMapper seckillMapper = mock(SeckillVoucherMapper.class);
-        ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
-        // 建单已拆分，门面只负责委托；这里给真实建单组件装配同一组桩。
-        com.hmdp.support.OrderRoutingTestSupport.install(creator);
-        ReflectionTestUtils.setField(service, "voucherOrderCreateService", creator);
-        ReflectionTestUtils.setField(creator, "voucherOrderMapper", orders);
-        ReflectionTestUtils.setField(creator, "voucherMapper", vouchers);
-        ReflectionTestUtils.setField(creator, "eventPublisher", events);
-        ReflectionTestUtils.setField(creator, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(creator, "orderProperties", new VoucherOrderProperties());
-        ReflectionTestUtils.setField(creator, "orderTimeoutPublisher", mock(OrderTimeoutPublisher.class));
-        StringRedisTemplate redis = mock(StringRedisTemplate.class);
-        HashOperations<String, Object, Object> reservations = mock(HashOperations.class);
-        ReflectionTestUtils.setField(creator, "seckillReservation", new SeckillReservation(redis));
-        when(redis.opsForHash()).thenReturn(reservations);
-        when(redis.opsForZSet()).thenReturn(mock(ZSetOperations.class));
-        when(reservations.get("seckill:reservation:10", "5")).thenReturn("100");
-        when(orders.selectCount(any())).thenReturn(0L);
-        when(seckill.update()).thenReturn(new UpdateChainWrapper<>(seckillMapper));
-        when(seckillMapper.update(isNull(), any())).thenReturn(1);
-        when(orders.insert(any(VoucherOrder.class))).thenReturn(1);
-        when(vouchers.selectById(10L)).thenReturn(new Voucher().setShopId(1L));
-        VoucherOrder order = new VoucherOrder().setId(100L).setVoucherId(10L).setUserId(5L);
-
-        service.createVoucherOrder(order);
-
-        var sequence = inOrder(orders, events);
-        sequence.verify(orders).selectCount(any());
-        sequence.verify(orders).insert(order);
-        sequence.verify(events).publishEvent(CacheInvalidationMessage.voucherList(1L));
     }
 
     private VoucherServiceImpl voucherService(VoucherMapper mapper) {
