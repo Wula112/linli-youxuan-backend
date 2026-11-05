@@ -34,9 +34,8 @@ public class VoucherOrderConsumer implements MessageListenerConcurrently {
             try {
                 payload = MqMessageCodec.decode(message.getBody(), VoucherOrderMessage.class);
             } catch (Exception ex) {
-                // 消息体损坏时重投也不会成功，记录后跳过
-                log.error("订单消息无法解析，已跳过，msgId={}", message.getMsgId(), ex);
-                continue;
+                log.error("订单消息无法解析，等待重投，msgId={}", message.getMsgId(), ex);
+                return ConsumeConcurrentlyStatus.RECONSUME_LATER;
             }
             try {
                 createOrder(payload);

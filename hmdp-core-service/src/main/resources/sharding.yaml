@@ -56,6 +56,16 @@ rules:
           standard:
             shardingColumn: voucher_id
             shardingAlgorithmName: order_table
+      tb_voucher_order_process:
+        actualDataNodes: ds_$->{0..1}.tb_voucher_order_process_$->{0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: order_id
+            shardingAlgorithmName: order_database
+        tableStrategy:
+          standard:
+            shardingColumn: order_id
+            shardingAlgorithmName: order_process_table
       tb_voucher_order_router:
         actualDataNodes: ds_$->{0..1}.tb_voucher_order_router_$->{0..1}
         databaseStrategy:
@@ -90,6 +100,7 @@ rules:
         type: INLINE
         props:
           algorithm-expression: ds_$->{order_id % 2}
+          allow-range-query-with-inline-sharding: true
       shop_table:
         type: INLINE
         props:
@@ -111,6 +122,11 @@ rules:
         type: INLINE
         props:
           algorithm-expression: tb_voucher_order_$->{voucher_id % 2}
+      order_process_table:
+        type: INLINE
+        props:
+          algorithm-expression: tb_voucher_order_process_$->{order_id.intdiv(2) % 2}
+          allow-range-query-with-inline-sharding: true
       order_router_table:
         type: INLINE
         props:

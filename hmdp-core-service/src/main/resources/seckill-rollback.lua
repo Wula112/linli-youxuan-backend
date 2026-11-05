@@ -12,19 +12,32 @@
 -- return 1
 --
 
--- ===== 当前回退：校验归属，原子释放Hash资格、恢复库存并清理对应pending =====
--- KEYS: 库存Key、预占Hash、pending ZSet；ARGV: userId、orderId、完整pending member
--- 新增KEYS[4]：补发次数Hash，随对应pending一起清理。
-if redis.call('hget', KEYS[2], ARGV[1]) ~= ARGV[2] then
-    -- 只清理这笔旧请求的索引，不影响新预占。
+-- KEYS: 库存、预占Hash、pending、旧补发计数Hash、本订单释放凭证。
+-- ARGV: userId、orderId、完整pending member。凭证保存完整标识，不设置TTL。
+local released = redis.call('get', KEYS[5])
+local owner = redis.call('hget', KEYS[2], ARGV[1])
+if released then
+    if released ~= ARGV[3] then
+        return -2
+    end
+    -- 上次库存和凭证已写入，即使清理中途失败也只能继续清理，不能再次加库存。
+    if owner == ARGV[2] then
+        redis.call('hdel', KEYS[2], ARGV[1])
+    end
     redis.call('zrem', KEYS[3], ARGV[3])
     redis.call('hdel', KEYS[4], ARGV[3])
+    return 2
+end
+if owner ~= ARGV[2] then
+    -- 缺失和归属变化都不能证明本订单曾返库。
     return 0
 end
-if redis.call('exists', KEYS[1]) == 0 then
+local stock = tonumber(redis.call('get', KEYS[1]))
+if not stock or stock < 0 or stock % 1 ~= 0 or stock >= 9007199254740991 then
     return -1
 end
-redis.call('incr', KEYS[1])
+-- 同一个写命令同时更新库存和凭证；之后清理出错时重试不会重复加库存。
+redis.call('mset', KEYS[1], string.format('%.0f', stock + 1), KEYS[5], ARGV[3])
 redis.call('hdel', KEYS[2], ARGV[1])
 redis.call('zrem', KEYS[3], ARGV[3])
 redis.call('hdel', KEYS[4], ARGV[3])

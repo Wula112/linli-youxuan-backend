@@ -46,21 +46,11 @@ class OrderTimeoutJobTest {
     void cleanup() { XxlJobContext.setXxlJobContext(null); Thread.interrupted(); }
 
     @Test
-    void shouldCloseExpiredOrdersAndRetryIncompleteRedisRestoreIndependently() {
+    void shouldContinueClosingOtherOrdersAfterFailure() {
         when(orders.findExpiredUnpaidOrders(0, 100)).thenReturn(List.of(1000L, 1001L));
-        when(orders.findClosedOrdersAwaitingStockRestore(0, 100)).thenReturn(List.of(900L));
-        doThrow(new IllegalStateException("Redis unavailable")).when(service).closeExpiredOrder(1000L);
-        job.closeExpiredOrders();
+        doThrow(new IllegalStateException("DB unavailable")).when(service).closeExpiredOrder(1000L);
+        assertFalse(job.closeBatch().successful());
         verify(service).closeExpiredOrder(1001L);
-        verify(service).closeExpiredOrder(900L);
-    }
-
-    @Test
-    void shouldContinueOtherScanIfExpiredOrderQueryFails() {
-        when(orders.findExpiredUnpaidOrders(0, 100)).thenThrow(new IllegalStateException("query failed"));
-        when(orders.findClosedOrdersAwaitingStockRestore(0, 100)).thenReturn(List.of(900L));
-        job.closeExpiredOrders();
-        verify(service).closeExpiredOrder(900L);
     }
 
     @Test

@@ -1,76 +1,66 @@
 package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.extension.conditions.update.UpdateChainWrapper;
+import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.entity.VoucherOrderProcess;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
-import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.ISeckillVoucherService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
-
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class VoucherOrderCloseTest {
-
-    // 关单已拆到独立组件；事务模板仍由它按 REQUIRES_NEW 显式创建。
     private final VoucherOrderCloseService service = new VoucherOrderCloseService();
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
     private final SeckillVoucherMapper stocks = mock(SeckillVoucherMapper.class);
     private final ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
-    private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
+    private final VoucherOrderProcessService processes = mock(VoucherOrderProcessService.class);
     private final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
-    private final VoucherOrder closed = new VoucherOrder().setId(1000L).setUserId(5L).setVoucherId(10L)
-            .setStatus(4).setRedisStockRestored(false);
+    private final VoucherOrderProcess process = new VoucherOrderProcess()
+            .setOrderId(1000L).setUserId(5L).setVoucherId(10L).setStatus("CREATED");
 
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(service, "voucherOrderMapper", orders);
         com.hmdp.support.OrderRoutingTestSupport.install(service);
         ReflectionTestUtils.setField(service, "seckillVoucherService", seckill);
-        ReflectionTestUtils.setField(service, "seckillReservation", new SeckillReservation(redis));
+        ReflectionTestUtils.setField(service, "processService", processes);
         ReflectionTestUtils.setField(service, "transactionManager", manager);
-        when(manager.getTransaction(any())).thenAnswer(invocation -> new SimpleTransactionStatus());
-        when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(closed);
+        when(manager.getTransaction(any())).thenAnswer(i -> new SimpleTransactionStatus());
+        when(processes.lock(1000L, 5L, 10L)).thenReturn(process);
+        doAnswer(i -> { process.setStatus(((OrderProcessStatus) i.getArgument(1)).name()); return null; })
+                .when(processes).transition(any(), any());
         when(seckill.update()).thenReturn(new UpdateChainWrapper<>(stocks));
         when(stocks.update(isNull(), any())).thenReturn(1);
-        when(redis.execute(any(RedisScript.class), anyList(), anyString(), anyString(), anyString())).thenReturn(1L);
     }
 
     @Test
-    void shouldCommitCloseAndDatabaseStockBeforeReleasingRedisQualification() {
+    void shouldRecordCompensationInSameTransactionAsCloseAndDatabaseRestore() {
         when(orders.closeIfExpired(1000L, 5L, 10L)).thenReturn(1);
         service.closeExpiredOrder(1000L);
-        var sequence = inOrder(orders, stocks, manager, redis);
+        var sequence = inOrder(processes, orders, stocks, manager);
+        sequence.verify(processes).lock(1000L, 5L, 10L);
         sequence.verify(orders).closeIfExpired(1000L, 5L, 10L);
-        sequence.verify(orders).selectRoutedOrder(1000L, 5L, 10L);
         sequence.verify(stocks).update(isNull(), any());
-        sequence.verify(manager).commit(any());
-        sequence.verify(redis).execute(any(RedisScript.class),
-                eq(List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending", "seckill:pending:retries")),
-                eq("5"), eq("1000"), eq("10:5:1000"));
-        sequence.verify(orders).markRedisStockRestored(1000L, 5L, 10L);
+        sequence.verify(processes).transition(process, OrderProcessStatus.COMPENSATING);
         sequence.verify(manager).commit(any());
     }
 
     @Test
-    void shouldRetryRedisRestoreWithoutRestoringDatabaseStockTwice() {
-        when(orders.closeIfExpired(1000L, 5L, 10L)).thenReturn(1, 0);
-        when(redis.execute(any(RedisScript.class), anyList(), anyString(), anyString(), anyString()))
-                .thenThrow(new IllegalStateException("lost Redis reply")).thenReturn(0L);
-        assertThrows(IllegalStateException.class, () -> service.closeExpiredOrder(1000L));
+    void shouldNotRestoreDatabaseStockTwice() {
+        when(orders.closeIfExpired(1000L, 5L, 10L)).thenReturn(1);
+        service.closeExpiredOrder(1000L);
         service.closeExpiredOrder(1000L);
         verify(stocks, times(1)).update(isNull(), any());
-        verify(orders, times(1)).markRedisStockRestored(1000L, 5L, 10L);
+        verify(processes, times(1)).transition(process, OrderProcessStatus.COMPENSATING);
     }
 
     @Test
@@ -79,16 +69,22 @@ class VoucherOrderCloseTest {
         when(stocks.update(isNull(), any())).thenReturn(0);
         assertThrows(IllegalStateException.class, () -> service.closeExpiredOrder(1000L));
         verify(manager).rollback(any());
-        verifyNoInteractions(redis);
-        verify(orders, never()).markRedisStockRestored(anyLong(), anyLong(), anyLong());
+        verify(processes, never()).transition(any(), eq(OrderProcessStatus.COMPENSATING));
     }
 
     @Test
-    void shouldNotRestorePaidOrAlreadyRestoredOrder() {
-        when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(closed.setStatus(2));
+    void shouldNotCompensatePaidOrNotYetExpiredOrder() {
+        when(orders.closeIfExpired(1000L, 5L, 10L)).thenReturn(0);
         service.closeExpiredOrder(1000L);
-        closed.setStatus(4).setRedisStockRestored(true);
+        verifyNoInteractions(stocks);
+        verify(processes, never()).transition(any(), eq(OrderProcessStatus.COMPENSATING));
+    }
+
+    @Test
+    void shouldRecognizeHistoricalActiveOrderBeforeTryingToCloseIt() {
+        process.setStatus("PENDING");
+        when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(new VoucherOrder().setStatus(1));
         service.closeExpiredOrder(1000L);
-        verifyNoInteractions(redis, stocks);
+        verify(processes).transition(process, OrderProcessStatus.CREATED);
     }
 }

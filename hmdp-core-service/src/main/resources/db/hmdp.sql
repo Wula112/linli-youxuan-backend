@@ -1271,7 +1271,6 @@ CREATE TABLE `tb_voucher_order`  (
   `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '订单状态，1：未支付；2：已支付；3：已核销；4：已取消；5：退款中；6：已退款',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
   `expire_time` datetime(3) NOT NULL COMMENT '支付截止时间，创建订单时确定',
-  `redis_stock_restored` tinyint(1) NOT NULL DEFAULT 0 COMMENT '已关闭订单的Redis库存返还是否完成',
   `active_order` tinyint GENERATED ALWAYS AS (CASE WHEN `status` = 4 THEN NULL ELSE 1 END) STORED COMMENT '未关闭订单唯一标记',
   `pay_time` timestamp NULL DEFAULT NULL COMMENT '支付时间',
   `use_time` timestamp NULL DEFAULT NULL COMMENT '核销时间',
@@ -1280,8 +1279,7 @@ CREATE TABLE `tb_voucher_order`  (
   PRIMARY KEY (`id`) USING BTREE,
   -- 原唯一索引（保留）：UNIQUE KEY `uk_order_user_voucher` (`user_id`, `voucher_id`) USING BTREE
   UNIQUE KEY `uk_order_user_voucher_active` (`user_id`, `voucher_id`, `active_order`) USING BTREE,
-  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`),
-  KEY `idx_order_status_restore` (`status`, `redis_stock_restored`, `id`)
+  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`)
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
 -- ----------------------------
@@ -1289,3 +1287,23 @@ CREATE TABLE `tb_voucher_order`  (
 -- ----------------------------
 
 SET FOREIGN_KEY_CHECKS = 1;
+
+-- 按订单号定位订单的既有路由目录（单库也使用同一套订单访问代码）
+DROP TABLE IF EXISTS `tb_voucher_order_router`;
+CREATE TABLE `tb_voucher_order_router` (
+  `order_id` bigint NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `voucher_id` bigint unsigned NOT NULL,
+  PRIMARY KEY (`order_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 建单、死信、对账和关单共用的处理状态
+DROP TABLE IF EXISTS `tb_voucher_order_process`;
+CREATE TABLE `tb_voucher_order_process` (
+  `order_id` bigint NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `voucher_id` bigint unsigned NOT NULL,
+  `status` varchar(20) NOT NULL,
+  PRIMARY KEY (`order_id`),
+  KEY `idx_process_status_order` (`status`, `order_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

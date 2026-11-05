@@ -13,15 +13,15 @@ hmdp-core-service/.../cache/
     config/CacheWarmupProperties     活动提前量、商铺数量上限、TTL与重试参数
 hmdp-core-service/.../job/
     CacheWarmupJob                   Redis预热、本地预热两个Handler
-    SeckillOrderReconcileJob         原pending核查与有限补发
-    OrderTimeoutJob                  原关单、返库补偿扫描
+    SeckillOrderReconcileJob         pending核查、死信与待返库处理
+    OrderTimeoutJob                  扫描并关闭到期订单
     config/JobProperties             local/xxl选择、单轮时间预算
     config/SeckillReconcileConfig    仅local模式注册原本地定时入口
     config/OrderTimeoutConfig        仅local模式注册原本地定时入口
     support/JobRun                   单轮计数、预算与执行结果上报
 ```
 
-业务任务不继承抽象Job基类，不引入任务表或自定义任务队列。旧调度注解保留为注释，原关单扫描实现也注释保留；订单业务方法、事务、Lua、原 Redis Stream 历史代码保持原样。
+业务任务不继承抽象Job基类；订单处理记录同时承担状态仲裁与待补偿记录，不新增消息补偿队列。
 
 ## 启用
 
@@ -52,8 +52,8 @@ Admin 与执行器必须双向可达：执行器连接 Admin，Admin 连接执�
 | --- | --- | --- | --- |
 | `hotCacheRedisWarmup` | Cron `0 * * * * ?`，活动前也可手动触发 | 故障转移 `FAILOVER` | 一台实例准备共享Redis展示数据 |
 | `hotCacheLocalWarmup` | 无独立周期，由前一个任务成功触发子任务 | 分片广播 `SHARDING_BROADCAST` | 所有实例装载自己的Caffeine |
-| `seckillOrderReconcile` | Cron `0 * * * * ?` | `FAILOVER` | 每分钟核查超时pending |
-| `orderTimeoutCompensate` | Cron `0 * * * * ?` | `FAILOVER` | 每分钟扫描超时未支付订单与待返库记录 |
+| `seckillOrderReconcile` | Cron `0 * * * * ?` | `FAILOVER` | 核查超时pending并处理死信和Redis待返库 |
+| `orderTimeoutCompensate` | Cron `0 * * * * ?` | `FAILOVER` | 每分钟扫描并关闭超时未支付订单 |
 
 先创建本地预热任务，再将其任务ID填入 Redis 预热任务的“子任务ID”。子任务从Redis读取已发布名单，不依赖父任务参数自动传递，也不重新查库筛选。每个 Handler 只建一个任务定义；不要额外创建多个不同任务ID来并行调度同一个扫描器。各实例的筛选规则保持一致，确保父任务切换执行器后口径不变。
 
@@ -70,15 +70,15 @@ Redis 预热建议每分钟检查一次，剩余有效期不超过2分钟才回�
 | 操作 | 本次重试方式 | 耗尽或失败后的处理 |
 | --- | --- | --- |
 | 单项缓存预热 | Spring 7 RetryTemplate；默认首次+2次重试，等待1秒、2秒，间隔上限5秒 | 继续处理其他热点，整轮标记失败；下一轮再处理，失败轮次不触发子任务 |
-| pending核查 | 不对整批立即重试；继续使用Lua领取后的等待窗口 | 保留原pending、订单号及已累计补发次数，下次超时核查继续 |
-| 发布订单消息 | 原Publisher有限重试保留 | 仍受每笔订单最多5轮对账补发限制 |
-| 关单、返库补偿 | 当前批次继续处理其他订单；下个扫描周期再核查失败记录 | 数据库状态不丢失，条件更新与Lua继续保证重复执行不重复返库 |
+| pending核查 | 不对整批立即重试；继续使用Lua领取后的等待窗口 | 未确认的预占保留，等待MQ消费或死信登记 |
+| 订单消息消费 | RocketMQ 按消费者组配置重投，耗尽进入死信 | 独立死信消费者写入处理记录，对账不再补发 |
+| 关单、返库补偿 | 当前批次继续处理其他订单；下个扫描周期再核查失败记录 | 处理状态与Redis释放凭证支持安全重试 |
 
 预热仅重试 Redis 连接故障、Spring 临时/可恢复数据访问异常、SQL临时异常、连接或网络超时及其包装异常。参数错误、数据解析失败、L2数据缺失等不立即重试。商铺不存在则按原规则缓存空值，是正常查询结果。中断不重试，保留线程中断标记并停止领取新记录。
 
 `max-retries=2` 是两次额外尝试，总执行次数最多三次。上限可配置为0到3；不会在最后一次失败后再无意义地睡眠。重试仅覆盖当前缓存项，不重跑已成功的整份名单。Admin 的重试次数保持0，避免“调度重试×缓存重试×MQ重试”叠加，也避免把业务错误重新整批执行。
 
-订单补发次数与调度执行次数是不同计数。任务失败、重新触发或切换执行器都不会重置 `seckill:pending:retries`。最后一轮补发后仍等待原超时窗口；下一次领取后持同一把订单锁重新查库，只有仍未建单且预占归属匹配，才按原流程释放预占。
+对账不再重发订单消息，也不维护补发计数。死信登记与建单共用处理记录；只有进入 COMPENSATING 的记录才由对账执行 Redis 回补。未确认消息结果的 pending 继续保留并记录日志。
 
 原生 XXL-JOB 支持配置失败重试次数，但不应把它理解为可依赖的“精确固定10秒退避”。失败检查周期、调度队列与执行器状态都会影响实际时刻。本实现明确由下一轮扫描或小范围 RetryTemplate 承担重试，不依赖这个时间假设。
 
@@ -116,11 +116,11 @@ hmdp:
 
 ## 执行预算、游标与失败可见性
 
-`hmdp.job.max-run-time` 默认30秒，是软预算：到时不再领取新记录，不强行停止正在执行的SQL或事务。关单和返库两类扫描各使用至多一半预算，每类仍最多10批；pending仍最多100条。超出软预算的在途I/O可能继续执行，连接池、数据库和Redis客户端仍需配置合理超时；Admin的60秒中断也不等同于线程已经终止。
+`hmdp.job.max-run-time` 默认30秒，是软预算：到时不再领取新记录，不强行停止正在执行的SQL或事务。对账为 pending、死信和待返库三个阶段分别预留预算；每轮 pending 最多100条，状态扫描最多10批。超出软预算的在途I/O可能继续执行，连接池、数据库和Redis客户端仍需配置合理超时；Admin的60秒中断也不等同于线程已经终止。
 
-`job:order-timeout:cursor` Hash 保存 `unpaid`、`restore` 两个游标；到扫描末尾归零。游标不是业务成功标记，失败订单仍保留在原表，下轮遍历会再次命中。游标丢失只会重扫，不会改变订单结果。`lock:job:order-timeout` 保护游标的领取与推进，避免不同执行器同时覆盖进度；最终业务幂等依旧由原SQL与Lua保证。
+`job:order-timeout:cursor` Hash 保存 `unpaid` 游标；`job:seckill-reconcile:cursor` 保存死信和待返库状态的游标；到扫描末尾归零。游标不是业务成功标记，失败订单仍保留在原表，下轮遍历会再次命中。游标丢失只会重扫，不会改变订单结果。`lock:job:order-timeout` 保护游标的领取与推进，避免不同执行器同时覆盖进度；最终业务幂等依旧由原SQL与Lua保证。
 
-单条失败不会阻断后续记录，但会累计失败数。任务结束用 `handleFail()` 或 `handleSuccess()`明确上报检查、跳过、失败数量；详细异常写入应用日志及XXL任务日志。空批次、领取竞争失败、订单锁忙是正常跳过；预占缺失、标识冲突、SQL或Redis错误会报失败，不能捕获后无条件显示成功。
+单条失败不会阻断后续记录，但会累计失败数。任务结束用 `handleFail()` 或 `handleSuccess()`明确上报检查、跳过、失败数量；详细异常写入应用日志及XXL任务日志。空批次、领取竞争失败、任务锁忙是正常跳过；预占缺失、标识冲突、SQL或Redis错误会报失败，不能捕获后无条件显示成功。
 
 扫描达到预算、保存进度后可正常结束；预热必须完成整份名单才算成功，未完成不能触发下游预热。保留 Admin 自带的失败日志与告警配置入口，本次不引入飞书、短信、Nacos、额外线程池或通知框架。
 
@@ -139,6 +139,6 @@ $env:HMDP_XXL_JOB_IT = 'true'
 mvn '-Dtest=XxlJobExecutorIT' test
 ```
 
-原订单流程集成测试仍按既有专用测试端口和环境开关运行，验证补发耗尽释放、迟到消息、数据库提交竞争、支付与关单返库。生产Admin的实际注册、路由和Cron仍需按上表配置后验收。
+原订单流程集成测试仍按既有专用测试端口和环境开关运行，验证死信登记、迟到消息、数据库提交竞争、支付与关单返库。生产Admin的实际注册、路由和Cron仍需按上表配置后验收。
 
 参考：[用户提供的文章](https://zhuanlan.zhihu.com/p/2007560773665317568)（依据用户粘贴正文）、[XXL-JOB官方文档](https://github.com/xuxueli/xxl-job/blob/3.4.2/doc/XXL-JOB官方文档.md)、[3.4.2执行器源码](https://github.com/xuxueli/xxl-job/blob/3.4.2/xxl-job-core/src/main/java/com/xxl/job/core/executor/XxlJobExecutor.java)。

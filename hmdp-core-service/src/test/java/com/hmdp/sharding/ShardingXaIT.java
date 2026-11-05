@@ -34,6 +34,11 @@ import com.hmdp.service.impl.VoucherOrderCloseService;
 import com.hmdp.service.impl.VoucherOrderCreateService;
 import com.hmdp.service.impl.VoucherOrderPaymentService;
 import com.hmdp.service.impl.VoucherOrderServiceImpl;
+import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.VoucherOrderCompensationService;
+import com.hmdp.repository.redis.SeckillReservation;
+import com.hmdp.mq.message.VoucherOrderMessage;
+import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.service.impl.VoucherServiceImpl;
 import com.hmdp.common.context.UserHolder;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -106,7 +111,8 @@ class ShardingXaIT {
         for (int db = 0; db < 2; db++) {
             for (int table = 0; table < 2; table++) {
                 for (String name : List.of("tb_shop", "tb_voucher", "tb_seckill_voucher",
-                        "tb_shop_voucher_index", "tb_voucher_order", "tb_voucher_order_router")) {
+                        "tb_shop_voucher_index", "tb_voucher_order", "tb_voucher_order_router",
+                        "tb_voucher_order_process")) {
                     physical.execute("DELETE FROM hmdp_" + db + "." + name + "_" + table);
                 }
             }
@@ -239,6 +245,41 @@ class ShardingXaIT {
     }
 
     @Test
+    void shouldSerializeOrderCreationAgainstDeadLetterCompensation() throws Exception {
+        seedVoucher(100L);
+        reserve(1000L);
+        VoucherOrderProcessService processes = context.getBean(VoucherOrderProcessService.class);
+        VoucherOrderMessage event = new VoucherOrderMessage(1000L, 101L, 100L);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var create = workers.submit(() -> {
+                start.await();
+                orderService.createVoucherOrder(order(1000L, 101L, 100L));
+                return null;
+            });
+            var compensate = workers.submit(() -> {
+                start.await();
+                processes.recordDeadLetter(event);
+                return processes.requestCompensation(1000L, 101L, 100L);
+            });
+            start.countDown();
+            create.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            OrderProcessStatus decision = compensate.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            VoucherOrderProcess current = context.getBean(VoucherOrderProcessMapper.class).selectById(1000L);
+            if (decision == OrderProcessStatus.CREATED) {
+                assertEquals("CREATED", current.getStatus());
+                assertNotNull(orders.selectRoutedOrder(1000L, 101L, 100L));
+                assertEquals(1, stock(100L));
+            } else {
+                assertEquals(OrderProcessStatus.COMPENSATING, decision);
+                assertEquals("COMPENSATING", current.getStatus());
+                assertNull(orders.selectRoutedOrder(1000L, 101L, 100L));
+                assertEquals(2, stock(100L));
+            }
+        }
+    }
+
+    @Test
     void shouldRollbackVoucherWhenCrossDatabaseShopIndexInsertFails() {
         context.getBean(ShopVoucherIndexMapper.class).insert(101L, 100L);
         assertThrows(RuntimeException.class, () -> context.getBean(IVoucherService.class).save(voucher(100L)));
@@ -255,7 +296,9 @@ class ShardingXaIT {
         orderService.closeExpiredOrder(1000L);
         orderService.closeExpiredOrder(1000L);
         assertEquals(4, orderService.getById(1000L).getStatus());
-        assertTrue(orderService.getById(1000L).getRedisStockRestored());
+        assertEquals("COMPENSATING", context.getBean(VoucherOrderProcessMapper.class).selectById(1000L).getStatus());
+        context.getBean(VoucherOrderCompensationService.class).compensate(1000L);
+        assertEquals("COMPENSATED", context.getBean(VoucherOrderProcessMapper.class).selectById(1000L).getStatus());
         assertEquals(2, stock(100L));
         assertFalse(orderService.mockPay(1000L, 1).getSuccess());
     }
@@ -282,12 +325,27 @@ class ShardingXaIT {
     }
 
     @Test
+    void shouldMergeCompensationScanAcrossAllProcessShards() {
+        VoucherOrderProcessMapper mapper = context.getBean(VoucherOrderProcessMapper.class);
+        for (long id = 1000; id < 1004; id++) {
+            mapper.insert(new VoucherOrderProcess().setOrderId(id).setUserId(101L)
+                    .setVoucherId(100L).setStatus("COMPENSATING"));
+        }
+        assertEquals(List.of(1000L, 1001L), mapper.findByStatusAfter("COMPENSATING", 0, 2)
+                .stream().map(VoucherOrderProcess::getOrderId).toList());
+        assertEquals(List.of(1002L, 1003L), mapper.findByStatusAfter("COMPENSATING", 1001, 2)
+                .stream().map(VoucherOrderProcess::getOrderId).toList());
+    }
+
+    @Test
     void shouldCopyOriginalDatabaseWithoutChangingIdsAndBuildBothDirectories() {
         physical.execute("CREATE DATABASE IF NOT EXISTS hmdp");
         var source = new DriverManagerDataSource(SERVER_URL.replace("13316/", "13316/hmdp"), "root", "");
         new ResourceDatabasePopulator(new ClassPathResource("db/hmdp.sql")).execute(source);
         physical.update("INSERT INTO hmdp.tb_voucher_order(id,user_id,voucher_id,status,expire_time) "
                 + "VALUES(3001,101,1,1,DATE_ADD(NOW(3),INTERVAL 15 MINUTE))");
+        physical.update("INSERT INTO hmdp.tb_voucher_order_process(order_id,user_id,voucher_id,status) "
+                + "VALUES(3001,101,1,'CREATED')");
         for (String table : List.of("tb_shop_type", "tb_user", "tb_user_info", "tb_blog",
                 "tb_blog_comments", "tb_follow", "tb_sign")) {
             physical.execute("DELETE FROM hmdp_0." + table);
@@ -364,6 +422,14 @@ class ShardingXaIT {
         @Bean VoucherOrderCreateService voucherOrderCreateService() { return new VoucherOrderCreateService(); }
         @Bean VoucherOrderPaymentService voucherOrderPaymentService() { return new VoucherOrderPaymentService(); }
         @Bean VoucherOrderCloseService voucherOrderCloseService() { return new VoucherOrderCloseService(); }
+        @Bean VoucherOrderProcessService voucherOrderProcessService(VoucherOrderProcessMapper mapper, VoucherOrderMapper orders) {
+            return new VoucherOrderProcessService(mapper, orders);
+        }
+        @Bean VoucherOrderCompensationService voucherOrderCompensationService(VoucherOrderProcessMapper mapper,
+                VoucherOrderProcessService processes, SeckillReservation reservation) {
+            return new VoucherOrderCompensationService(mapper, processes, reservation);
+        }
+        @Bean SeckillReservation seckillReservation(StringRedisTemplate redis) { return new SeckillReservation(redis); }
         @Bean ISeckillVoucherService seckillVoucherService() { return new SeckillVoucherServiceImpl(); }
         @Bean VoucherOrderProperties orderProperties() { return new VoucherOrderProperties(); }
         @Bean VoucherListCacheService voucherListCacheService() { return mock(VoucherListCacheService.class); }

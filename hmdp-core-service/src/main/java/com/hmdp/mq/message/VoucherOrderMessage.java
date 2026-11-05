@@ -1,19 +1,16 @@
 package com.hmdp.mq.message;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.springframework.util.Assert;
 
 /** 只传创建订单所需的标识，业务实体由消费端构造。 */
-public record VoucherOrderMessage(Long orderId, Long userId, Long voucherId, int retryCount) {
-
-    public VoucherOrderMessage(Long orderId, Long userId, Long voucherId) {
-        this(orderId, userId, voucherId, 0);
-    }
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record VoucherOrderMessage(Long orderId, Long userId, Long voucherId) {
 
     public VoucherOrderMessage {
         Assert.isTrue(orderId != null && orderId > 0, "orderId必须大于0");
         Assert.isTrue(userId != null && userId > 0, "userId必须大于0");
         Assert.isTrue(voucherId != null && voucherId > 0, "voucherId必须大于0");
-        Assert.isTrue(retryCount >= 0, "retryCount不能为负");
     }
 
     /** 全局待对账索引中保留完整定位信息，避免反向扫描预占Hash。 */
@@ -27,7 +24,4 @@ public record VoucherOrderMessage(Long orderId, Long userId, Long voucherId, int
         return new VoucherOrderMessage(Long.valueOf(parts[2]), Long.valueOf(parts[1]), Long.valueOf(parts[0]));
     }
 
-    public VoucherOrderMessage incrementRetry() {
-        return new VoucherOrderMessage(orderId, userId, voucherId, retryCount + 1);
-    }
 }

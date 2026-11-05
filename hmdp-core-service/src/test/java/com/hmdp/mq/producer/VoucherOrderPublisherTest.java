@@ -3,8 +3,6 @@ package com.hmdp.mq.producer;
 import com.hmdp.mq.config.RocketMqConstants;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import org.apache.rocketmq.client.exception.MQClientException;
-import org.apache.rocketmq.client.producer.SendResult;
-import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.client.producer.TransactionMQProducer;
 import org.apache.rocketmq.common.message.Message;
 import org.junit.jupiter.api.Test;
@@ -51,26 +49,6 @@ class VoucherOrderPublisherTest {
         verify(producer, never()).send(any(Message.class));
     }
 
-    @Test
-    void shouldRejectUnsuccessfulRepublish() throws Exception {
-        when(producer.send(any(Message.class))).thenReturn(sendResult(SendStatus.FLUSH_DISK_TIMEOUT));
-
-        assertThrows(IllegalStateException.class, () -> publisher.publish(message));
-    }
-
-    @Test
-    void shouldRepublishAsNormalMessage() throws Exception {
-        when(producer.send(any(Message.class))).thenReturn(sendResult(SendStatus.SEND_OK));
-
-        publisher.publish(message);
-
-        ArgumentCaptor<Message> sent = ArgumentCaptor.forClass(Message.class);
-        verify(producer).send(sent.capture());
-        assertEquals(RocketMqConstants.ORDER_CREATE_TAG, sent.getValue().getTags());
-        // 补发不再触发本地事务
-        verify(producer, never()).sendMessageInTransaction(any(Message.class), any());
-    }
-
     private void completeLocalTransaction(long result) throws Exception {
         doAnswer(invocation -> {
             SeckillTxContext context = invocation.getArgument(1);
@@ -79,10 +57,4 @@ class VoucherOrderPublisherTest {
         }).when(producer).sendMessageInTransaction(any(Message.class), any());
     }
 
-    private SendResult sendResult(SendStatus status) {
-        SendResult result = new SendResult();
-        result.setSendStatus(status);
-        result.setMsgId("msg-1");
-        return result;
-    }
 }

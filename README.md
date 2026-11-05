@@ -120,9 +120,9 @@ java -jar hmdp-core-service/target/hm-dianping-0.0.1-SNAPSHOT.jar --hmdp.cache.s
 
 ## 秒杀订单对账
 
-系统通过 Redis 记录库存预占和待处理订单，并定时核对数据库状态：已创建的订单直接清理待处理记录，未创建的订单按配置补发消息。
+系统通过 Redis 记录库存预占和待处理订单；RocketMQ 消费重试耗尽后，由独立消费者登记死信。
 
-对账任务默认每分钟执行一次，每次核查 5 分钟前的记录，每批最多 100 条，默认最多补发 5 轮。确认订单未创建后，系统会释放库存预占。
+对账任务默认每分钟执行，核查 5 分钟前的预占，每批最多 100 条，并处理待补偿订单。未确认消费结果的预占会保留，Redis 凭证防止重复返库。
 
 配置项为 `hmdp.seckill.reconcile`。详见[订单对账说明](docs/seckill-order-reconcile.md)。
 
@@ -130,7 +130,7 @@ java -jar hmdp-core-service/target/hm-dianping-0.0.1-SNAPSHOT.jar --hmdp.cache.s
 
 订单创建后，用户可在 15 分钟内模拟支付。超时订单由 RocketMQ 定时消息和数据库扫描任务关闭。关单后返还库存并释放购买资格，历史订单保留。
 
-升级前需执行支付截止时间和超时关单的增量 SQL。配置与测试方法见[支付说明](docs/voucher-order-payment.md)和[自动关单说明](docs/voucher-order-timeout.md)。
+已有库需迁移订单处理记录并核对旧返库标记，再删除订单表的旧返库字段。配置与测试方法见[支付说明](docs/voucher-order-payment.md)和[自动关单说明](docs/voucher-order-timeout.md)。
 
 ## XXL-JOB 调度与缓存预热
 

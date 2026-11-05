@@ -53,8 +53,6 @@ hmdp:
       interval: 1m
       pending-timeout: 5m
       batch-size: 100
-      # 每笔订单最多补发5轮；每轮内部仍按producer-max-attempts重试，0表示禁用补发
-      max-republish-retries: 5
   cache:
     warmup:
       enabled: false

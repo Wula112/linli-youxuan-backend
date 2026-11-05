@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.function.LongFunction;
 
-/** 数据库扫描兜底，与Redis预占补发对账分开；多实例依靠状态条件更新和Lua幂等协作。 */
+/** 扫描到期订单；关闭与返还数据库库存共用数据库事务，Redis 由对账任务补偿。 */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -45,7 +45,7 @@ public class OrderTimeoutJob {
         RLock lock = null;
         boolean acquired = false;
         try {
-            // 任务锁只保护两个扫描游标；业务关单仍依靠原SQL条件更新和返库Lua幂等。
+            // 任务锁只保护扫描游标；业务关单由处理记录与条件更新仲裁。
             lock = redisson.getLock(SCAN_LOCK);
             acquired = lock.tryLock();
             if (!acquired) {
@@ -54,10 +54,6 @@ public class OrderTimeoutJob {
             }
             scan("unpaid", afterId -> voucherOrderMapper.findExpiredUnpaidOrders(afterId,
                     properties.getTimeoutScanBatchSize()), run);
-            if (run.canContinue()) {
-                scan("restore", afterId -> voucherOrderMapper.findClosedOrdersAwaitingStockRestore(afterId,
-                        properties.getTimeoutScanBatchSize()), run);
-            }
         } catch (Exception ex) {
             recordFailure("关单补偿批次失败", ex, run);
         } finally {
@@ -67,8 +63,7 @@ public class OrderTimeoutJob {
     }
 
     private void scan(String field, LongFunction<List<Long>> query, JobRun run) {
-        // 两类扫描各用至多一半预算，未支付订单积压时也给返库补偿留出机会。
-        long phaseDeadline = System.nanoTime() + jobProperties.getMaxRunTime().toNanos() / 2;
+        long phaseDeadline = System.nanoTime() + jobProperties.getMaxRunTime().toNanos();
         try {
             Object saved = redis.opsForHash().get(CURSOR_KEY, field);
             long cursor = saved == null ? 0 : Long.parseLong(saved.toString());
@@ -118,42 +113,4 @@ public class OrderTimeoutJob {
         run.canContinue();
     }
 
-    // 以下保留原本地定时扫描实现；原调度注解现移到OrderTimeoutConfig。
-    //     // 单线程调度；每轮有上限且保留游标，异常记录不会长期挡住后面的订单。
-    //     private long unpaidCursor;
-    //     private long restoreCursor;
-    //
-    //     @Scheduled(fixedDelayString = "${hmdp.order.timeout-scan-interval:60000}", scheduler = "orderTimeoutScheduler")
-    //     public void closeExpiredOrders() {
-    //         unpaidCursor = scan(afterId -> voucherOrderMapper.findExpiredUnpaidOrders(afterId,
-    //                 properties.getTimeoutScanBatchSize()), unpaidCursor);
-    //         if (!Thread.currentThread().isInterrupted()) {
-    //             restoreCursor = scan(afterId -> voucherOrderMapper.findClosedOrdersAwaitingStockRestore(afterId,
-    //                     properties.getTimeoutScanBatchSize()), restoreCursor);
-    //         }
-    //     }
-    //
-    //     private long scan(LongFunction<List<Long>> query, long cursor) {
-    //         for (int batch = 0; batch < MAX_BATCHES; batch++) {
-    //             List<Long> orderIds;
-    //             try {
-    //                 orderIds = query.apply(cursor);
-    //             } catch (Exception ex) {
-    //                 log.error("扫描超时订单或待返库订单失败，cursor={}", cursor, ex);
-    //                 return cursor;
-    //             }
-    //             if (orderIds == null || orderIds.isEmpty()) return 0;
-    //             for (Long orderId : orderIds) {
-    //                 try {
-    //                     voucherOrderService.closeExpiredOrder(orderId);
-    //                 } catch (Exception ex) {
-    //                     log.error("关单或返库失败，保留数据库记录供重试，orderId={}", orderId, ex);
-    //                 }
-    //                 if (Thread.currentThread().isInterrupted()) return cursor;
-    //             }
-    //             cursor = orderIds.getLast();
-    //             if (orderIds.size() < properties.getTimeoutScanBatchSize()) return 0;
-    //         }
-    //         return cursor;
-    //     }
 }

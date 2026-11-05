@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hmdp.mapper.VoucherOrderProcessMapper">
+    <insert id="insertIfAbsent">
+        INSERT INTO tb_voucher_order_process (order_id, user_id, voucher_id, status)
+        VALUES (#{orderId}, #{userId}, #{voucherId}, 'PENDING')
+        ON DUPLICATE KEY UPDATE order_id = order_id
+    </insert>
+
+    <select id="selectForUpdate" resultType="com.hmdp.entity.VoucherOrderProcess">
+        SELECT order_id, user_id, voucher_id, status FROM tb_voucher_order_process
+        WHERE order_id = #{orderId} FOR UPDATE
+    </select>
+
+    <update id="transition">
+        UPDATE tb_voucher_order_process SET status = #{toStatus}
+        WHERE order_id = #{orderId} AND status = #{fromStatus}
+    </update>
+
+    <select id="findByStatusAfter" resultType="com.hmdp.entity.VoucherOrderProcess">
+        SELECT order_id, user_id, voucher_id, status FROM tb_voucher_order_process
+        WHERE status = #{status} AND order_id &gt; #{afterId}
+        ORDER BY order_id LIMIT #{limit}
+    </select>
+</mapper>

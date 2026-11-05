@@ -2,7 +2,9 @@ package com.hmdp.job;
 
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
-import com.hmdp.mq.producer.VoucherOrderPublisher;
+import com.hmdp.mapper.VoucherOrderProcessMapper;
+import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.VoucherOrderCompensationService;
 import com.hmdp.repository.redis.SeckillPendingRepository;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.job.config.SeckillReconcileConfig;
@@ -47,14 +49,15 @@ class SeckillReconcileConfigTest {
                 .withBean(JobProperties.class, JobProperties::new)
                 .withBean(StringRedisTemplate.class, () -> redis)
                 .withBean(VoucherOrderMapper.class, () -> mock(VoucherOrderMapper.class))
-                .withBean(VoucherOrderPublisher.class, () -> mock(VoucherOrderPublisher.class))
+                .withBean(VoucherOrderProcessMapper.class, () -> mock(VoucherOrderProcessMapper.class))
+                .withBean(VoucherOrderProcessService.class, () -> mock(VoucherOrderProcessService.class))
+                .withBean(VoucherOrderCompensationService.class, () -> mock(VoucherOrderCompensationService.class))
                 .withBean(RedissonClient.class, () -> mock(RedissonClient.class))
-                .withPropertyValues("hmdp.seckill.reconcile.interval=1m", "hmdp.seckill.reconcile.max-republish-retries=2")
+                .withPropertyValues("hmdp.seckill.reconcile.interval=1m")
                 .run(ctx -> {
                     assertNull(ctx.getStartupFailure());
                     assertTrue(ctx.containsBean("seckillReconcileScheduler"));
                     assertEquals(1, ctx.getBeansOfType(SeckillOrderReconcileJob.class).size());
-                    assertEquals(2, ctx.getBean(SeckillReconcileProperties.class).getMaxRepublishRetries());
                 });
     }
 
@@ -64,18 +67,8 @@ class SeckillReconcileConfigTest {
         assertEquals(Duration.ofMinutes(1), properties.getInterval());
         assertEquals(Duration.ofMinutes(5), properties.getPendingTimeout());
         assertEquals(100, properties.getBatchSize());
-        assertEquals(5, properties.getMaxRepublishRetries());
         assertDoesNotThrow(properties::validate);
         properties.setBatchSize(0);
-        assertThrows(IllegalArgumentException.class, properties::validate);
-    }
-
-    @Test
-    void shouldRejectNegativeRetryLimitAndAcceptZero() {
-        var properties = new SeckillReconcileProperties();
-        properties.setMaxRepublishRetries(0);
-        assertDoesNotThrow(properties::validate);
-        properties.setMaxRepublishRetries(-1);
         assertThrows(IllegalArgumentException.class, properties::validate);
     }
 

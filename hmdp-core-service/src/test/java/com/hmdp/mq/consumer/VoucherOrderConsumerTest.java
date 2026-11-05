@@ -12,6 +12,7 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -63,13 +64,20 @@ class VoucherOrderConsumerTest {
     }
 
     @Test
-    void shouldSkipUnreadableMessageWithoutRetrying() {
+    void shouldRetryUnreadableMessageForDeadLetterHandling() {
         MessageExt broken = new MessageExt();
         broken.setBody(new byte[]{'x'});
 
-        assertEquals(ConsumeConcurrentlyStatus.CONSUME_SUCCESS, consumer.consumeMessage(List.of(broken), null));
+        assertEquals(ConsumeConcurrentlyStatus.RECONSUME_LATER, consumer.consumeMessage(List.of(broken), null));
 
         verifyNoInteractions(service, redisson);
+    }
+
+    @Test
+    void shouldReadLegacyMessagesThatContainRepublishCounter() {
+        byte[] old = "{\"orderId\":1000,\"userId\":5,\"voucherId\":10,\"retryCount\":3}"
+                .getBytes(StandardCharsets.UTF_8);
+        assertEquals(message, MqMessageCodec.decode(old, VoucherOrderMessage.class));
     }
 
     private MessageExt message() {

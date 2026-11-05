@@ -5,16 +5,12 @@ import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.support.MqMessageCodec;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
-import org.apache.rocketmq.client.producer.SendResult;
-import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.client.producer.TransactionMQProducer;
 import org.apache.rocketmq.common.message.Message;
-import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.springframework.stereotype.Component;
 
-/** 秒杀订单消息：下单走事务消息，对账补发走普通消息。 */
+/** 秒杀订单事务消息生产者；消费失败由 RocketMQ 重试。 */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -38,16 +34,6 @@ public class VoucherOrderPublisher {
                     message.orderId(), context.getResult(), ex);
         }
         return context.getResult();
-    }
-
-    /** 对账补发：预扣已经存在，只补投普通消息，不再执行 Lua。 */
-    public void publish(VoucherOrderMessage message)
-            throws MQClientException, MQBrokerException, RemotingException, InterruptedException {
-        SendResult result = producer.send(createMessage(message));
-        if (result.getSendStatus() != SendStatus.SEND_OK) {
-            throw new IllegalStateException("秒杀订单消息发送失败，orderId=" + message.orderId()
-                    + "，状态=" + result.getSendStatus());
-        }
     }
 
     private Message createMessage(VoucherOrderMessage message) {

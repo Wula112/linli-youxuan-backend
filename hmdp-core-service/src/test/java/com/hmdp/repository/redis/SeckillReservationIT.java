@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -48,8 +50,51 @@ class SeckillReservationIT {
         assertEquals("1", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
         assertNull(reservation.getReservedOrderId(voucherId, userId));
         assertNull(redis.opsForZSet().score(SECKILL_PENDING_KEY, member));
+        assertEquals(2L, reservation.rollback(voucherId, userId, orderId));
+        assertEquals("1", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test
+    void shouldNotReleaseAgainOrRemoveANewerReservation() {
+        assertEquals(0L, reservation.reserve(voucherId, userId, orderId));
+        assertEquals(1L, reservation.rollback(voucherId, userId, orderId));
+        assertEquals(0L, reservation.reserve(voucherId, userId, orderId + 1));
+        assertEquals(2L, reservation.rollback(voucherId, userId, orderId));
+        assertEquals(Long.toString(orderId + 1), reservation.getReservedOrderId(voucherId, userId));
+        assertEquals("0", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+    }
+
+    @Test
+    void shouldNotTreatMissingReservationAsSuccessfulRelease() {
         assertEquals(0L, reservation.rollback(voucherId, userId, orderId));
         assertEquals("1", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+        assertFalse(Boolean.TRUE.equals(redis.hasKey(SECKILL_RELEASED_KEY + orderId)));
+    }
+
+    @Test
+    void shouldNotIncreaseStockTwiceWhenCleanupFailsAfterRelease() {
+        String pendingKey = SECKILL_PENDING_KEY + ":it:" + orderId;
+        String retryKey = SECKILL_PENDING_RETRIES_KEY + ":it:" + orderId;
+        String member = voucherId + ":" + userId + ":" + orderId;
+        List<String> keys = List.of(SECKILL_STOCK_KEY + voucherId, SECKILL_RESERVATION_KEY + voucherId,
+                pendingKey, retryKey, SECKILL_RELEASED_KEY + orderId);
+        var script = new DefaultRedisScript<Long>();
+        script.setLocation(new ClassPathResource("seckill-rollback.lua"));
+        script.setResultType(Long.class);
+        try {
+            redis.opsForValue().set(SECKILL_STOCK_KEY + voucherId, "0");
+            redis.opsForHash().put(SECKILL_RESERVATION_KEY + voucherId, Long.toString(userId), Long.toString(orderId));
+            redis.opsForValue().set(pendingKey, "wrong-type");
+            assertThrows(Exception.class, () -> redis.execute(script, keys,
+                    Long.toString(userId), Long.toString(orderId), member));
+            assertEquals("1", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+            assertEquals(member, redis.opsForValue().get(SECKILL_RELEASED_KEY + orderId));
+            redis.delete(pendingKey);
+            assertEquals(2L, redis.execute(script, keys, Long.toString(userId), Long.toString(orderId), member));
+            assertEquals("1", redis.opsForValue().get(SECKILL_STOCK_KEY + voucherId));
+        } finally {
+            redis.delete(List.of(pendingKey, retryKey));
+        }
     }
 
     @AfterEach
@@ -57,8 +102,9 @@ class SeckillReservationIT {
         if (redis != null) {
             String member = voucherId + ":" + userId + ":" + orderId;
             redis.delete(List.of(SECKILL_STOCK_KEY + voucherId, SECKILL_RESERVATION_KEY + voucherId,
-                    SECKILL_TXN_KEY + orderId, SECKILL_TXN_KEY + (orderId + 1)));
-            redis.opsForZSet().remove(SECKILL_PENDING_KEY, member);
+                    SECKILL_TXN_KEY + orderId, SECKILL_TXN_KEY + (orderId + 1),
+                    SECKILL_RELEASED_KEY + orderId, SECKILL_RELEASED_KEY + (orderId + 1)));
+            redis.opsForZSet().remove(SECKILL_PENDING_KEY, member, voucherId + ":" + userId + ":" + (orderId + 1));
             redis.opsForHash().delete(SECKILL_PENDING_RETRIES_KEY, member);
         }
         if (connection != null) connection.destroy();

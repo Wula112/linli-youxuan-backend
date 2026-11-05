@@ -5,6 +5,8 @@ import com.hmdp.common.dto.Result;
 import com.hmdp.config.VoucherOrderProperties;
 import com.hmdp.common.dto.UserDTO;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.entity.VoucherOrderProcess;
+import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.common.enums.VoucherOrderStatus;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -18,8 +20,6 @@ import com.hmdp.common.context.UserHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -48,13 +48,10 @@ class VoucherOrderServiceImplTest {
     private final ZSetOperations<String, String> pending = mock(ZSetOperations.class);
     private final VoucherOrderPublisher publisher = mock(VoucherOrderPublisher.class);
     private final IdentifierGenerator ids = mock(IdentifierGenerator.class);
-    private final RedissonClient redisson = mock(RedissonClient.class);
-    private final RLock lock = mock(RLock.class);
     private final ISeckillVoucherService seckill = mock(ISeckillVoucherService.class);
+    private final VoucherOrderProcessService process = mock(VoucherOrderProcessService.class);
     private final SeckillVoucherMapper stocks = mock(SeckillVoucherMapper.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final List<String> rollbackKeys = List.of("seckill:stock:10", "seckill:reservation:10",
-            "seckill:pending", "seckill:pending:retries");
     private final List<String> clearKeys = List.of("seckill:pending", "seckill:pending:retries");
     private final VoucherOrderMessage message = new VoucherOrderMessage(1000L, 5L, 10L);
 
@@ -63,10 +60,10 @@ class VoucherOrderServiceImplTest {
         SeckillReservation reservation = new SeckillReservation(redis);
         ReflectionTestUtils.setField(service, "baseMapper", orders);
         var routes = com.hmdp.support.OrderRoutingTestSupport.install(service);
-        ReflectionTestUtils.setField(service, "seckillReservation", reservation);
         ReflectionTestUtils.setField(service, "voucherOrderPublisher", publisher);
         ReflectionTestUtils.setField(service, "identifierGenerator", ids);
-        ReflectionTestUtils.setField(service, "redissonClient", redisson);
+        ReflectionTestUtils.setField(service, "voucherOrderProcessService", process);
+        ReflectionTestUtils.setField(creator, "processService", process);
         // 建单已拆分：测试仍从门面调用，由门面委托到真实建单组件。
         ReflectionTestUtils.setField(service, "voucherOrderCreateService", creator);
         ReflectionTestUtils.setField(creator, "voucherOrderMapper", orders);
@@ -79,8 +76,12 @@ class VoucherOrderServiceImplTest {
         user.setId(5L);
         UserHolder.saveUser(user);
         when(ids.nextId(any())).thenReturn(1000L);
-        when(redisson.getLock("lock:order:10:5")).thenReturn(lock);
-        when(lock.tryLock()).thenReturn(true);
+        when(process.lock(1000L, 5L, 10L)).thenAnswer(i -> new VoucherOrderProcess()
+                .setOrderId(1000L).setUserId(5L).setVoucherId(10L).setStatus("PENDING"));
+        doAnswer(i -> { VoucherOrderProcess row = i.getArgument(0);
+            row.setStatus(((OrderProcessStatus) i.getArgument(1)).name()); return null; })
+                .when(process).transition(any(), any());
+        when(process.requestCompensation(1000L, 5L, 10L)).thenReturn(OrderProcessStatus.COMPENSATING);
         when(redis.opsForHash()).thenReturn(reservations);
         when(redis.opsForZSet()).thenReturn(pending);
         when(reservations.get("seckill:reservation:10", "5")).thenReturn("1000");
@@ -124,37 +125,35 @@ class VoucherOrderServiceImplTest {
     }
 
     @Test
-    void shouldRollbackOwnedReservationWhenLocalTransactionIsUnknown() {
+    void shouldPersistCompensationDecisionWhenLocalTransactionIsUnknown() {
         when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
 
         assertFalse(service.secKillVoucher(10L).getSuccess());
-
-        verify(redis).execute(any(RedisScript.class), eq(rollbackKeys), eq("5"), eq("1000"), eq("10:5:1000"));
-        verify(lock).unlock();
+        verify(process).requestCompensation(1000L, 5L, 10L);
+        verify(redis, never()).execute(any(RedisScript.class), anyList(), any(Object[].class));
     }
 
     @Test
-    void shouldNotRestoreStockIfOrderAlreadyCommitted() {
+    void shouldReturnOrderWhenUnknownTransactionAlreadyCreated() {
         when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
-        when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(order());
+        when(process.requestCompensation(1000L, 5L, 10L)).thenReturn(OrderProcessStatus.CREATED);
 
         Result result = service.secKillVoucher(10L);
 
         assertTrue(result.getSuccess());
-        verify(redis, never()).execute(any(RedisScript.class), eq(rollbackKeys), anyString(), anyString(),
-                anyString());
+        verify(redis).execute(any(RedisScript.class), eq(clearKeys), eq("10:5:1000"));
     }
 
     @Test
-    void shouldKeepReservationWhenConsumerHoldsLock() {
+    void shouldKeepReservationWhenCompensationDecisionCannotBeRecorded() {
         when(publisher.sendInTransaction(message)).thenReturn(SeckillReservation.UNKNOWN);
-        when(lock.tryLock()).thenReturn(false);
+        when(process.requestCompensation(1000L, 5L, 10L)).thenThrow(new IllegalStateException("DB down"));
 
         Result result = service.secKillVoucher(10L);
 
         assertFalse(result.getSuccess());
         assertTrue(result.getErrorMsg().contains("1000"));
-        verify(lock, never()).unlock();
+        verify(redis, never()).execute(any(RedisScript.class), anyList(), any(Object[].class));
     }
 
     @Test
@@ -213,8 +212,9 @@ class VoucherOrderServiceImplTest {
     }
 
     @Test
-    void shouldIgnoreLateMessageAfterReservationWasRolledBack() {
-        when(reservations.get("seckill:reservation:10", "5")).thenReturn(null);
+    void shouldIgnoreLateMessageAfterCompensationDecision() {
+        when(process.lock(1000L, 5L, 10L)).thenReturn(new VoucherOrderProcess()
+                .setOrderId(1000L).setUserId(5L).setVoucherId(10L).setStatus("COMPENSATING"));
         service.createVoucherOrder(order());
         verifyNoInteractions(seckill, events);
         verify(orders, never()).insert(any(VoucherOrder.class));
@@ -223,7 +223,7 @@ class VoucherOrderServiceImplTest {
     @Test
     void shouldNotLetOldOrderUseNewOrdersReservation() {
         when(reservations.get("seckill:reservation:10", "5")).thenReturn("2000");
-        service.createVoucherOrder(order());
+        assertThrows(IllegalStateException.class, () -> service.createVoucherOrder(order()));
         verifyNoInteractions(seckill, events);
     }
 

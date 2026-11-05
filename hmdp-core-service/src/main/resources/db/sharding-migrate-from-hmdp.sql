@@ -54,17 +54,17 @@ SELECT `voucher_id`, `stock`, `create_time`, `begin_time`, `end_time`, `update_t
 INSERT INTO hmdp_1.tb_seckill_voucher_1 (`voucher_id`, `stock`, `create_time`, `begin_time`, `end_time`, `update_time`)
 SELECT `voucher_id`, `stock`, `create_time`, `begin_time`, `end_time`, `update_time` FROM hmdp.tb_seckill_voucher WHERE voucher_id % 2 = 1 AND (voucher_id DIV 2) % 2 = 1;
 
-INSERT INTO hmdp_0.tb_voucher_order_0 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time`)
-SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 0 AND voucher_id % 2 = 0;
+INSERT INTO hmdp_0.tb_voucher_order_0 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time`)
+SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 0 AND voucher_id % 2 = 0;
 
-INSERT INTO hmdp_0.tb_voucher_order_1 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time`)
-SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 0 AND voucher_id % 2 = 1;
+INSERT INTO hmdp_0.tb_voucher_order_1 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time`)
+SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 0 AND voucher_id % 2 = 1;
 
-INSERT INTO hmdp_1.tb_voucher_order_0 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time`)
-SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 1 AND voucher_id % 2 = 0;
+INSERT INTO hmdp_1.tb_voucher_order_0 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time`)
+SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 1 AND voucher_id % 2 = 0;
 
-INSERT INTO hmdp_1.tb_voucher_order_1 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time`)
-SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `redis_stock_restored`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 1 AND voucher_id % 2 = 1;
+INSERT INTO hmdp_1.tb_voucher_order_1 (`id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time`)
+SELECT `id`, `user_id`, `voucher_id`, `pay_type`, `status`, `create_time`, `expire_time`, `pay_time`, `use_time`, `refund_time`, `update_time` FROM hmdp.tb_voucher_order WHERE user_id % 2 = 1 AND voucher_id % 2 = 1;
 
 INSERT INTO hmdp_0.tb_voucher_order_router_0 (order_id, user_id, voucher_id)
 SELECT id, user_id, voucher_id FROM hmdp.tb_voucher_order WHERE id % 2 = 0 AND (id DIV 2) % 2 = 0;
@@ -89,5 +89,21 @@ SELECT id, user_id, voucher_id FROM hmdp.tb_voucher_order WHERE id % 2 = 1 AND (
 
 INSERT INTO hmdp_1.tb_shop_voucher_index_1 (shop_id, voucher_id)
 SELECT shop_id, id FROM hmdp.tb_voucher WHERE shop_id % 2 = 1 AND (shop_id DIV 2) % 2 = 1;
+
+INSERT INTO hmdp_0.tb_voucher_order_process_0 (order_id, user_id, voucher_id, status)
+SELECT order_id, user_id, voucher_id, status FROM hmdp.tb_voucher_order_process
+WHERE order_id % 2 = 0 AND (order_id DIV 2) % 2 = 0;
+
+INSERT INTO hmdp_0.tb_voucher_order_process_1 (order_id, user_id, voucher_id, status)
+SELECT order_id, user_id, voucher_id, status FROM hmdp.tb_voucher_order_process
+WHERE order_id % 2 = 0 AND (order_id DIV 2) % 2 = 1;
+
+INSERT INTO hmdp_1.tb_voucher_order_process_0 (order_id, user_id, voucher_id, status)
+SELECT order_id, user_id, voucher_id, status FROM hmdp.tb_voucher_order_process
+WHERE order_id % 2 = 1 AND (order_id DIV 2) % 2 = 0;
+
+INSERT INTO hmdp_1.tb_voucher_order_process_1 (order_id, user_id, voucher_id, status)
+SELECT order_id, user_id, voucher_id, status FROM hmdp.tb_voucher_order_process
+WHERE order_id % 2 = 1 AND (order_id DIV 2) % 2 = 1;
 
 COMMIT;

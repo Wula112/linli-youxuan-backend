@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.hmdp.common.dto.Result;
+import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
@@ -14,13 +15,10 @@ import com.hmdp.mapper.VoucherOrderRouterMapper;
 import com.hmdp.common.context.UserHolder;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 
 import java.io.Serializable;
 
-import static com.hmdp.common.constant.RedisConstants.*;
 
 // 原有实现使用的导入，随旧代码注释保留。
 // import cn.hutool.core.bean.BeanUtil;
@@ -319,13 +317,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     // ===== 原有实现保留结束；下方为新增 RocketMQ 事务消息实现 =====
 
     @Resource
-    private SeckillReservation seckillReservation;
-    @Resource
     private IdentifierGenerator identifierGenerator;
     @Resource
     private VoucherOrderRouterMapper voucherOrderRouterMapper;
-    @Resource
-    private RedissonClient redissonClient;
     @Resource
     private VoucherOrderPublisher voucherOrderPublisher;
     // 建单、支付与关单已拆成独立类，门面只做委托，事务边界留在各自实现里。
@@ -335,6 +329,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private VoucherOrderPaymentService voucherOrderPaymentService;
     @Resource
     private VoucherOrderCloseService voucherOrderCloseService;
+    @Resource
+    private VoucherOrderProcessService voucherOrderProcessService;
 
     @Override
     public Result<Long> secKillVoucher(Long voucherId) {
@@ -400,37 +396,20 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     }
 
     private Result<Long> rollbackReservation(VoucherOrderMessage message) {
-        RLock lock = redissonClient.getLock(LOCK_VOUCHER_ORDER_KEY + message.voucherId() + ":" + message.userId());
-        boolean locked = false;
         try {
-            // 与消费者共用锁，避免“回退预扣”和“数据库提交”并发执行。
-            locked = lock.tryLock();
-            if (!locked) {
-                return pendingResult(message);
-            }
-            if (getById(message.orderId()) != null) {
+            // 与消费者争夺同一数据库处理记录；Redis 释放由对账任务执行。
+            OrderProcessStatus status = voucherOrderProcessService.requestCompensation(
+                    message.orderId(), message.userId(), message.voucherId());
+            if (status == OrderProcessStatus.CREATED) {
                 // 发布确认丢失，但消费者已完成订单，不能恢复库存。
                 voucherOrderCreateService.clearPendingAfterCommit(new VoucherOrder().setId(message.orderId())
                         .setUserId(message.userId()).setVoucherId(message.voucherId()));
                 return Result.ok(message.orderId());
             }
-            // 原调用（保留）：未清理pending。
-            // Long rolledBack = stringRedisTemplate.execute(ROLLBACK_SCRIPT, reservationKeys(message.voucherId()),
-            //         message.userId().toString(), message.orderId().toString());
-            Long rolledBack = seckillReservation.rollback(message.voucherId(), message.userId(), message.orderId());
-            if (rolledBack == null || rolledBack < 0) {
-                return pendingResult(message);
-            }
-            // 从当前的业务视角来讲，发送消息重试耗尽后，我们无法感知消息是否被消费
-            // 只能先返回失败给调用方。
             return Result.fail("订单提交失败，请稍后重试");
         } catch (Exception ex) {
             log.error("秒杀预扣回退失败，需核对订单与预扣记录，message={}", message, ex);
             return pendingResult(message);
-        } finally {
-            if (locked) {
-                lock.unlock();
-            }
         }
     }
 

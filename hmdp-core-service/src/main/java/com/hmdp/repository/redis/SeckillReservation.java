@@ -12,6 +12,7 @@ import java.util.List;
 import static com.hmdp.common.constant.RedisConstants.SECKILL_PENDING_KEY;
 import static com.hmdp.common.constant.RedisConstants.SECKILL_PENDING_RETRIES_KEY;
 import static com.hmdp.common.constant.RedisConstants.SECKILL_RESERVATION_KEY;
+import static com.hmdp.common.constant.RedisConstants.SECKILL_RELEASED_KEY;
 import static com.hmdp.common.constant.RedisConstants.SECKILL_STOCK_KEY;
 import static com.hmdp.common.constant.RedisConstants.SECKILL_TXN_KEY;
 
@@ -67,7 +68,7 @@ public class SeckillReservation {
         return stringRedisTemplate.opsForHash().get(SECKILL_RESERVATION_KEY + voucherId, userId.toString());
     }
 
-    /** 只回退属于本订单的预占；返回值小于0表示库存Key缺失，需要人工核对。 */
+    /** 1=本次释放，2=此前已释放，0=归属缺失或不匹配，负数=数据异常。 */
     public Long rollback(Long voucherId, Long userId, Long orderId) {
         // 沿用原调用链对订单、用户和优惠券标识的校验。
         Assert.isTrue(orderId != null && orderId > 0, "orderId必须大于0");
@@ -75,7 +76,7 @@ public class SeckillReservation {
         Assert.isTrue(voucherId != null && voucherId > 0, "voucherId必须大于0");
         return stringRedisTemplate.execute(ROLLBACK_SCRIPT,
                 List.of(SECKILL_STOCK_KEY + voucherId, SECKILL_RESERVATION_KEY + voucherId,
-                        SECKILL_PENDING_KEY, SECKILL_PENDING_RETRIES_KEY),
+                        SECKILL_PENDING_KEY, SECKILL_PENDING_RETRIES_KEY, SECKILL_RELEASED_KEY + orderId),
                 userId.toString(), orderId.toString(), voucherId + ":" + userId + ":" + orderId);
     }
 

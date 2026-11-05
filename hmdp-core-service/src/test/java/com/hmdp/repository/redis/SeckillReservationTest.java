@@ -49,7 +49,7 @@ class SeckillReservationTest {
 
         verify(redis).execute(any(RedisScript.class),
                 eq(List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending",
-                        "seckill:pending:retries")),
+                        "seckill:pending:retries", "seckill:released:1000")),
                 eq("5"), eq("1000"), eq("10:5:1000"));
     }
 

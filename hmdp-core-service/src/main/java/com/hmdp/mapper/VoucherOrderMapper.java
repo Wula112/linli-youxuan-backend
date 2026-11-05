@@ -25,10 +25,6 @@ public interface VoucherOrderMapper extends BaseMapper<VoucherOrder> {
     int closeIfExpired(@Param("orderId") Long orderId, @Param("userId") Long userId,
                        @Param("voucherId") Long voucherId);
 
-    int markRedisStockRestored(@Param("orderId") Long orderId, @Param("userId") Long userId,
-                              @Param("voucherId") Long voucherId);
-
     List<Long> findExpiredUnpaidOrders(@Param("afterId") long afterId, @Param("limit") int limit);
 
-    List<Long> findClosedOrdersAwaitingStockRestore(@Param("afterId") long afterId, @Param("limit") int limit);
 }

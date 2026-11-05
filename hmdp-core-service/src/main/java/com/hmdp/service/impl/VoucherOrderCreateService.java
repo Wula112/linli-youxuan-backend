@@ -2,9 +2,11 @@ package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hmdp.common.enums.VoucherOrderStatus;
+import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.config.VoucherOrderProperties;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.entity.VoucherOrderRouter;
+import com.hmdp.entity.VoucherOrderProcess;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mapper.VoucherOrderRouterMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
@@ -50,8 +52,19 @@ public class VoucherOrderCreateService {
     @Resource
     private OrderTimeoutPublisher orderTimeoutPublisher;
 
+    @Resource
+    private VoucherOrderProcessService processService;
+
     @Transactional(rollbackFor = Exception.class)
     public void createVoucherOrder(VoucherOrder voucherOrder) {
+        // 先取得数据库仲裁行；锁一直持有到订单和库存事务提交或回滚。
+        VoucherOrderProcess process = processService.lock(voucherOrder.getId(),
+                voucherOrder.getUserId(), voucherOrder.getVoucherId());
+        OrderProcessStatus status = OrderProcessStatus.valueOf(process.getStatus());
+        if (status == OrderProcessStatus.COMPENSATING || status == OrderProcessStatus.COMPENSATED) {
+            log.info("忽略已终止的秒杀订单，orderId={}", voucherOrder.getId());
+            return;
+        }
         // 幂等性，同一订单重复投递直接成功，ACK 丢失后重投也不会再次扣减库存。
         VoucherOrder existing = findExistingOrder(voucherOrder.getId());
         if (existing != null) {
@@ -59,16 +72,22 @@ public class VoucherOrderCreateService {
                     || !existing.getVoucherId().equals(voucherOrder.getVoucherId())) {
                 throw new IllegalArgumentException("订单标识与已有订单不一致");
             }
+            if (Integer.valueOf(VoucherOrderStatus.CLOSED.getCode()).equals(existing.getStatus())) {
+                throw new IllegalStateException("已关闭订单缺少正确处理状态，orderId=" + voucherOrder.getId());
+            }
+            if (status != OrderProcessStatus.CREATED) {
+                processService.transition(process, OrderProcessStatus.CREATED);
+            }
             clearPendingAfterCommit(voucherOrder);
             return;
+        }
+        if (status == OrderProcessStatus.CREATED) {
+            throw new IllegalStateException("处理记录显示已建单但订单不存在，orderId=" + voucherOrder.getId());
         }
         Object reservedOrderId = seckillReservation.getReservedOrderId(
                 voucherOrder.getVoucherId(), voucherOrder.getUserId());
         if (!voucherOrder.getId().toString().equals(reservedOrderId)) {
-            // 发送失败的回退已完成，（此时reservedOrderId应为Null）
-            // 或发送失败的回退已完成，并且用户已经发起新请求，生成了新订单Id（reservedOrderId），此时旧消息带了旧订单Id。
-            log.info("忽略已回退的秒杀订单，orderId={}", voucherOrder.getId());
-            return;
+            throw new IllegalStateException("订单预占不存在或归属不匹配，orderId=" + voucherOrder.getId());
         }
         // 原校验（保留）：历史已关闭订单也阻止再次购买。
         // long count = query().eq("user_id", voucherOrder.getUserId())
@@ -78,7 +97,8 @@ public class VoucherOrderCreateService {
                 .eq("voucher_id", voucherOrder.getVoucherId())
                 .ne("status", VoucherOrderStatus.CLOSED.getCode()));
         if (count > 0) {
-            clearPendingAfterCommit(voucherOrder);
+            // 已有有效订单时不能再次建单，但本次预占仍需由对账释放。
+            processService.transition(process, OrderProcessStatus.COMPENSATING);
             return;
         }
         boolean success = seckillVoucherService.update().setSql("stock = stock - 1")
@@ -100,6 +120,7 @@ public class VoucherOrderCreateService {
                 .setUserId(voucherOrder.getUserId()).setVoucherId(voucherOrder.getVoucherId())) != 1) {
             throw new IllegalStateException("订单路由保存失败，orderId=" + voucherOrder.getId());
         }
+        processService.transition(process, OrderProcessStatus.CREATED);
         // 券列表缓存只保存元数据，库存由查询时从 seckill:stock:{voucherId} 读取，
         // 所以建单不再发布缓存失效消息；详见 docs/cache-consistency.md。
         clearPendingAfterCommit(voucherOrder);

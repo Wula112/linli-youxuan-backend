@@ -3,6 +3,7 @@ package com.hmdp.mq.config;
 import com.hmdp.mq.consumer.CacheInvalidationConsumer;
 import com.hmdp.mq.consumer.OrderTimeoutConsumer;
 import com.hmdp.mq.consumer.VoucherOrderConsumer;
+import com.hmdp.mq.consumer.VoucherOrderDeadLetterConsumer;
 import com.hmdp.mq.producer.SeckillTransactionListener;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.consumer.listener.MessageListenerConcurrently;
@@ -16,7 +17,7 @@ import org.springframework.context.annotation.Configuration;
 import java.util.UUID;
 
 /**
- * RocketMQ 客户端装配：一条事务生产者承担全部发送，三条消费者分别对应下单、关单与缓存失效。
+ * RocketMQ 客户端装配：一条事务生产者承担全部发送；消费者分别处理下单、死信、关单与缓存失效。
  *
  * <p>消费者失败重投次数由 max-reconsume-times 控制，耗尽后进入 %DLQ%&lt;consumer-group&gt;。
  */
@@ -41,15 +42,23 @@ public class RocketMqConfig {
     }
 
     /** 下单消息：共享消费者组，一条消息只由一个实例处理。 */
-    @Bean(destroyMethod = "shutdown")
+    @Bean(name = "voucherOrderMqConsumer", destroyMethod = "shutdown")
     public DefaultMQPushConsumer voucherOrderConsumer(RocketMqProperties properties,
             VoucherOrderConsumer listener) throws MQClientException {
         return start(properties, RocketMqConstants.ORDER_CONSUMER_GROUP, RocketMqConstants.ORDER_TOPIC,
                 RocketMqConstants.ORDER_CREATE_TAG, ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET, listener);
     }
 
+    /** 独立组读取下单消费者组死信，首次启动从最早仍保留的消息开始。 */
+    @Bean(name = "voucherOrderDeadLetterMqConsumer", destroyMethod = "shutdown")
+    public DefaultMQPushConsumer voucherOrderDeadLetterConsumer(RocketMqProperties properties,
+            VoucherOrderDeadLetterConsumer listener) throws MQClientException {
+        return start(properties, RocketMqConstants.ORDER_DEAD_LETTER_CONSUMER_GROUP,
+                RocketMqConstants.ORDER_DEAD_LETTER_TOPIC, "*", ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET, listener);
+    }
+
     /** 延迟关单消息：到点才会被投递，处理逻辑与数据库扫描兜底完全一致。 */
-    @Bean(destroyMethod = "shutdown")
+    @Bean(name = "orderTimeoutMqConsumer", destroyMethod = "shutdown")
     public DefaultMQPushConsumer orderTimeoutConsumer(RocketMqProperties properties,
             OrderTimeoutConsumer listener) throws MQClientException {
         return start(properties, RocketMqConstants.TIMEOUT_CONSUMER_GROUP, RocketMqConstants.ORDER_TOPIC,
@@ -57,7 +66,7 @@ public class RocketMqConfig {
     }
 
     /** 缓存失效广播：每实例一个消费者组，新实例只关心启动之后的消息。 */
-    @Bean(destroyMethod = "shutdown")
+    @Bean(name = "cacheInvalidationMqConsumer", destroyMethod = "shutdown")
     @ConditionalOnProperty(prefix = "hmdp.cache.mq", name = "enabled", havingValue = "true", matchIfMissing = true)
     public DefaultMQPushConsumer cacheInvalidationConsumer(RocketMqProperties properties,
             CacheInvalidationConsumer listener) throws MQClientException {

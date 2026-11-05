@@ -1,68 +1,39 @@
-# 秒杀订单对账
+# 秒杀订单处理与对账
 
-对账找出“Redis 已预占、MySQL 尚未建单”的请求并有限补发；补发耗尽后，与消费者共用订单锁，锁内重新查库，确认未建单且预占归属匹配才释放预占。不比较两边库存数值，也不单凭等待超时返还库存。
+下单消息由 RocketMQ 自行重试；重试耗尽后，独立死信消费者登记处理记录。对账任务不再补发下单消息。任务由 XXL-JOB 的 `seckillOrderReconcile` 调度；未启用 XXL profile 时沿用本地调度。
 
-## Redis 结构
+## 处理记录和状态
 
-| Key | 类型 | 内容与用途 |
-| --- | --- | --- |
-| `seckill:stock:{voucherId}` | String | Redis 可抢库存 |
-| `seckill:reservation:{voucherId}` | Hash | `userId → orderId`，同时校验一人一单和预占归属 |
-| `seckill:pending` | ZSet | member=`voucherId:userId:orderId`；score 初始为预占时间戳（毫秒） |
-| `seckill:pending:retries` | Hash | 完整 member → 已使用的对账补发轮次，跨任务执行、跨实例累计 |
-
-当前代码不再读写一人一单 Set，旧常量和历史实现注释保留。Hash 先通过 HEXISTS 检查重复购买，再检查库存；即使库存为 0，已有资格的用户也会得到重复购买结果。
-
-Lua 一次完成扣库存、写 Hash 和登记 pending。不能在应用发送 MQ 失败之后才登记，否则进程在预扣与发送之间退出时没有可恢复索引。
-
-## 代码职责
+`tb_voucher_order_process` 每笔订单一行，字段为 `order_id`（主键）、`user_id`、`voucher_id` 和 `status`。建单、死信登记、对账、入口结果未知时的预占回退，以及超时关单都通过同一记录协调；不另存失败原因或重试次数。
 
 ```text
-job/（hmdp-core-service 内）
-├── SeckillOrderReconcileJob.java          扫描、核对数据库、验证预占、补发
-└── config/
-    ├── SeckillReconcileProperties.java   时间、批量大小、开关
-    └── SeckillReconcileConfig.java       独立单线程调度器
+PENDING ──建单成功──────────────────────────> CREATED
+   │                                             │
+   │ 死信登记                                    │ 到期关单并返还 MySQL 库存
+   ▼                                             ▼
+DEAD_LETTER ──对账决定释放预占──────────────> COMPENSATING ──Redis 返还成功──> COMPENSATED
+   │
+   └────迟到消费者先取得处理权且成功建单────> CREATED
 
-mq/producer/VoucherOrderPublisher.java    复用既有发布确认与有限重试
-service/impl/VoucherOrderServiceImpl.java 事务提交后只清理pending
+PENDING / DEAD_LETTER ──入口结果未知、决定终止──> COMPENSATING
 ```
 
-没有为对账新增数据库表或通用补偿框架。补发耗尽的释放复用既有订单锁与 `seckill-rollback.lua`；Redis Stream、阻塞队列和同步下单的旧代码及原注释仍保留。
+建单事务先插入或获取处理记录并锁定，再扣减 MySQL 库存、插入订单与路由、更新为 CREATED；提交后才确认 MQ。死信登记同样锁定处理记录，只有仍为 PENDING 且不存在已提交订单才改成 DEAD_LETTER。迟到的死信不能覆盖 CREATED 或补偿状态。消费者在对账决策前仍可从 DEAD_LETTER 正常建单；对账先改成 COMPENSATING 后，迟到消费者不得建单。
 
-## 每轮处理
+超时关单在同一数据库事务中锁定处理记录、条件关闭未支付订单、返还 MySQL 库存并更新为 COMPENSATING。未建单的预占释放不返还 MySQL 库存。所有 Redis 回补都由对账任务处理。
 
-默认每分钟扫描 5 分钟前的 pending，最多取 100 条，不使用 KEYS，也不遍历全部优惠券 Hash。
+## 对账和 Redis 凭证
 
-1. Lua 原子核对 ZSCORE，只有仍存在且已超时的成员能被领取。领取时将 score 推进到当前时间，使同一条记录在接下来的 5 分钟内不会重复领取。
-2. 解析完整 member，使用原订单号查询 MySQL 已提交订单。
-3. 订单存在且用户、优惠券匹配：ZREM 该 member，保留 Hash 购买资格。
-4. 订单不存在，且 Hash 中该用户仍对应原订单号：Lua 再次确认 pending 和预占有效，原子检查并增加补发次数，再按原 orderId、userId、voucherId 补发 MQ；消息 retryCount 携带本轮次数。
-5. Hash 对应另一笔订单：只删除旧 pending，不修改新预占。
-6. Hash 缺失、格式损坏、数据库标识冲突或依赖调用异常：记录错误日志，保留待核查记录，不释放库存。
-7. 补发次数耗尽且上限大于 0：不再发布消息，尝试获取消费者使用的 `lock:order:{voucherId}:{userId}`。锁内重新查询已提交订单：存在则只清理索引；不存在则重新核对预占，通过既有 Lua 原子恢复 Redis 库存、释放该订单资格并清理 pending 和计数。拿不到锁、查询失败或库存 Key 缺失时保留记录，等待下次超时核查。
+- `seckill:reservation:{voucherId}`：Hash，userId → orderId，用于资格与预占归属。
+- `seckill:pending`：ZSet，member 为 voucherId:userId:orderId。它是业务对账索引，不是 RocketMQ Pending List。
+- `seckill:released:{orderId}`：Redis 回补凭证，值为完整 member，不设置 TTL。需覆盖所有可能的重试、消息重放和恢复窗口，不能随意删除。
+- `seckill:pending:retries`：旧版遗留键；新流程不写入，仅在清理旧 pending 时删除对应字段。
 
-补发已确认也不删除 pending，必须等数据库提交成功。补发失败或记录异常不会阻塞当前批次其余成员；领取时已经推进时间，下一轮先处理其他更早的候选。长期异常会持续保留并输出错误日志，应结合日志监控进行人工核查，本次没有额外接入通知渠道。
+每轮先检查超时 pending：订单已提交时清除该索引；未发现订单时保留预占，等待 RocketMQ 消费或死信登记。**超时本身不是消费失败的证明**，不按超时直接返库。随后按处理状态分别扫描 DEAD_LETTER 和 COMPENSATING：前者在事务中重新仲裁并进入 COMPENSATING，后者通过 Lua 校验归属、回补库存并写入按订单唯一的凭证，再把处理状态更新为 COMPENSATED。
 
-每笔订单默认最多对账补发 5 轮，初次请求发送不占用此额度；每轮仍复用 Publisher 的有限重试（默认最多尝试 3 次），因此 5 轮不等于最多发送 5 次。发送失败也占用一轮；次数在发送前登记，登记后进程退出可能少发一轮，但不会因重启或多实例竞争突破上限。数据库查询失败、缺失预占等未进入补发的情况不计次数。
+库存和凭证由一次 MSET 写入；如果后续资格或索引清理出错，再次执行看到凭证只补做清理，不会再次加库存。预占缺失或归属不符且没有凭证时无法判断是否回补过，保留 COMPENSATING 并记录错误，不盲目加库存。Redis 脚本无跨 MySQL 的事务，也不提供运行时异常回滚；凭证与库存应一并持久化并纳入备份和恢复。
 
-最后一轮补发不会立即释放。领取时已将 score 推进到当前时间，再次达到 `pending-timeout` 后才进入耗尽处理（默认最后一轮补发后还要等待至少 5 分钟，自领取时间计算）。计数不设 TTL，避免长期故障后次数重置；补发次数耗尽后，即使发布确认曾成功，仍以锁内查库结果和预占归属决定是否释放。订单完成、旧 pending 清理、原有发送失败回退以及本次耗尽释放，均原子清理对应计数。
-
-消费者持有同一把订单锁直到数据库事务完成：消费者先执行时，对账拿不到锁就延期，或拿锁后查到已提交订单而不返库；对账先释放时，后到的消息因 Hash 已不属于原订单而跳过建单。用户随后重新抢购会产生新的订单号，旧消息也不能扣库存或影响新资格。这里沿用项目现有的锁可靠前提，不覆盖锁失效或 Redis 预占记录丢失后的恢复。
-
-多实例只靠这次原子 score 推进领取处理窗口，不增加额外锁 Key。这个窗口不是永久锁：处理超过窗口仍可能再次补发，所以仍需原订单号幂等、数据库唯一约束和条件扣库存。
-
-## 提交清理与并发
-
-成功建单、已建单的重复投递以及已满足同用户同券唯一约束的请求，在事务 afterCommit 回调中清理 pending；事务回滚不清理。清理异常记录日志，不把已提交的订单返回成创建失败，定时任务之后会根据数据库订单补清。
-
-上述清理现在同时删除该 member 的补发计数，原事务、购买资格和库存处理规则保持不变。
-
-成功建单后保留 Hash，避免用户再次通过一人一单校验。已有“发布失败后的安全回退”与本次“补发耗尽后的安全释放”均与消费者共用订单锁；回退 Lua 同步删除当前请求的 Hash 字段和 pending、恢复库存。未建单预占释放只恢复 Redis，不修改 MySQL 库存；已建单后的关闭与返库仍由关单链路负责。
-
-领取脚本只对已存在成员执行 `ZADD XX`，并且发生在核查与补发之前。消费者先 ZREM 时，领取脚本直接跳过；消费者后 ZREM 时，对账结束也不会再写回索引。旧 pending 的清理使用完整 member，不会移除用户后来新建订单的 pending。
-
-score 在第一次登记时为预占时间，领取后为最近核查/补发尝试时间，不能把更新后的 score 当作原始创建时间统计总等待时长。
+任务分批处理，状态扫描游标保存在 `job:seckill-reconcile:cursor`，任务锁保护游标；数据库条件更新和 Redis 凭证负责业务幂等。失败记录保留，下一轮继续，错误写入应用与 XXL 任务日志。当前不接入独立通知渠道。
 
 ## 配置
 
@@ -74,33 +45,20 @@ hmdp:
       interval: 1m
       pending-timeout: 5m
       batch-size: 100
-      max-republish-retries: 5
 ```
 
-`pending-timeout` 同时控制初次核查阈值和再次领取间隔。默认本地模式使用独立的 `seckill-reconcile-` 单线程调度器，不占用商铺延迟双删线程；XXL 模式停用本地调度，由 `seckillOrderReconcile` Handler 触发。`interval` 只用于本地模式，XXL 周期在 Admin 配置。关闭任务时仍登记 pending，也仍在提交成功后清理，后续重新开启可以继续核查积压。
+`interval` 只用于本地调度；XXL 周期在 Admin 配置。订单创建重试次数由 `hmdp.rocketmq.max-reconsume-times` 控制。死信消费者使用独立组读取 `%DLQ%hmdp-voucher-order-consumer`，首次从仍保留的最早消息读取；登记失败会返回消费失败，不提前确认。
 
-批次有时间预算，单条异常继续处理后续记录，同时将本轮向 XXL-JOB 报为失败。调度失败不重置补发计数，也不立即重跑整批；仍按领取后的等待窗口核查。启用方式与后台配置见 [XXL-JOB 接入说明](xxl-job.md)。
+如果事务半消息最终未提交、消息超过 Broker 保留期、死信登记链路不可用或消息体无法解析，订单可能只有 Redis pending、没有死信记录。任务会持续保留并记录日志，**不会自动补发或释放**；需要监控积压并核查。库存汇总比对尚未实现。
 
-`max-republish-retries` 为每笔订单的累计对账补发轮次上限，允许为 0（只核查、不补发，也不因额度为 0 自动释放），不能为负数。已有 pending 没有计数字段时从 0 开始累计，升级前的历史补发轮次不追溯。上限大于 0 时，已有达到上限的记录也会在下次超时核查中执行安全释放判断。
+## 数据库升级
 
-## 切换与边界
+新库使用 `db/hmdp.sql` 或 `db/sharding-schema.sql`。旧库先停止写入、消费者和调度，备份后执行 `db/voucher-order-process-migrate.sql`；同实例双库分片使用 `db/voucher-order-process-sharding-migrate.sql`。单库脚本也会补建并回填既有订单路由表，需确认路由不一致数量为 0。先核对迁移的记录和状态，再手动执行脚本末尾注释的删索引、删 `redis_stock_restored` 语句。MySQL DDL 会隐式提交，不应视为单个原子事务。
 
-- 当前适用于项目已有的单节点 Redis。三个业务 Key 和全局 pending 在 Redis Cluster 下不能保证同槽，不能直接原样部署到 Cluster；需要另行调整同槽命名或按优惠券拆分索引。
-- 不给 Hash、pending 或活动库存随意增加 TTL。预占和待对账索引需要 Redis 持久化、保留周期和备份保障，不能等同于 MySQL 同事务 Outbox。
-- 切换前停止新请求并处理旧积压。旧版 Set 中的已购买用户需要根据 MySQL 订单补齐 Hash，确认购买资格完整后才能停止依赖 Set。
-- 旧版只有 Hash、没有 pending 的未完成预占不会被新任务自动发现；升级时需一次性核对并补齐有效 pending。新预占则由 Lua 自动原子登记。
-- 不存在订单可能只是消息积压或事务未提交，因此只有补发耗尽且持订单锁重新查库后，才能释放有效预占。当前未配置读写分离；锁内查询必须读取主库已提交结果，不能迁移到可能延迟的只读副本，也不能复用锁外事务的旧快照。库存汇总核查仍属于后续阶段。
+旧版 Redis 已返库、但旧数据库标记仍为 0 的记录没有新凭证，会保留 COMPENSATING，需人工核对。不能将这类记录直接重新加库存。部署前统一切换所有实例，并保留处理终态直至所有旧消息和人工重放窗口结束。
+
+分片模式下处理表按 order_id 路由，建单与关单涉及多个分片时依赖现有 XA 配置；按状态扫描会跨分片合并。当前 Redis 预占脚本使用全局 pending，适用于项目现有单节点 Redis，不能未经同槽改造直接迁往 Redis Cluster。
 
 ## 验证
 
-单元测试：
-
-```shell
-mvn "-Dtest=*Test" test
-```
-
-`VoucherOrderFlowIT` 依赖 RabbitMQ 拓扑，已随秒杀链路迁移到 RocketMQ 而删除；其覆盖的补单、索引补清、并发领取、补发耗尽与释放竞争场景，目前由 `SeckillOrderReconcileJobTest` 与 `SeckillTransactionListenerTest` 在单元层覆盖。
-
-`SeckillPendingRetryIT` 仅使用专用 Redis，显式设置 `HMDP_SECKILL_REDIS_IT=true` 后运行；默认端口 6388，可用 `-Dhmdp.test.redis.port` 指定其他测试端口。测试使用随机 Key，覆盖累计额度、多客户端并发上限、清理与计数竞争、禁用补发和原回退清理。
-
-`SeckillReservationIT` 使用专用 Redis 验证预扣组件和实际 Lua 的衔接，默认端口 16389。显式设置 `HMDP_SECKILL_RESERVATION_IT=true` 后运行 `mvn "-Dtest=SeckillReservationIT" test`；测试只清理随机生成的订单及优惠券数据，不要将测试端口指向业务 Redis。
+单元测试覆盖死信登记、状态仲裁、对账和关单。显式开启 `HMDP_SECKILL_RESERVATION_IT=true` 可在专用 Redis 16389 验证实际 Lua；`HMDP_SHARDING_IT=true` 在专用 MySQL 13316 验证分片与 XA；`HMDP_ORDER_PROCESS_MYSQL_IT=true` 验证单库及分片迁移；`HMDP_ROCKETMQ_DLQ_IT=true` 在专用 RocketMQ 19876/20911 验证死信自动订阅；`HMDP_ORDER_RECOVERY_E2E=true` 联合三个隔离实例验证死信登记到对账回补的完整流程。启用前必须确保测试端口指向隔离实例。

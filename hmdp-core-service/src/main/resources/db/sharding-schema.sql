@@ -105,7 +105,6 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_0`  (
   `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '订单状态，1：未支付；2：已支付；3：已核销；4：已取消；5：退款中；6：已退款',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
   `expire_time` datetime(3) NOT NULL COMMENT '支付截止时间，创建订单时确定',
-  `redis_stock_restored` tinyint(1) NOT NULL DEFAULT 0 COMMENT '已关闭订单的Redis库存返还是否完成',
   `active_order` tinyint GENERATED ALWAYS AS (CASE WHEN `status` = 4 THEN NULL ELSE 1 END) STORED COMMENT '未关闭订单唯一标记',
   `pay_time` timestamp NULL DEFAULT NULL COMMENT '支付时间',
   `use_time` timestamp NULL DEFAULT NULL COMMENT '核销时间',
@@ -114,8 +113,7 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_0`  (
   PRIMARY KEY (`id`) USING BTREE,
   -- 原唯一索引（保留）：UNIQUE KEY `uk_order_user_voucher` (`user_id`, `voucher_id`) USING BTREE
   UNIQUE KEY `uk_order_user_voucher_active` (`user_id`, `voucher_id`, `active_order`) USING BTREE,
-  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`),
-  KEY `idx_order_status_restore` (`status`, `redis_stock_restored`, `id`)
+  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`)
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
 CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
@@ -126,7 +124,6 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
   `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '订单状态，1：未支付；2：已支付；3：已核销；4：已取消；5：退款中；6：已退款',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
   `expire_time` datetime(3) NOT NULL COMMENT '支付截止时间，创建订单时确定',
-  `redis_stock_restored` tinyint(1) NOT NULL DEFAULT 0 COMMENT '已关闭订单的Redis库存返还是否完成',
   `active_order` tinyint GENERATED ALWAYS AS (CASE WHEN `status` = 4 THEN NULL ELSE 1 END) STORED COMMENT '未关闭订单唯一标记',
   `pay_time` timestamp NULL DEFAULT NULL COMMENT '支付时间',
   `use_time` timestamp NULL DEFAULT NULL COMMENT '核销时间',
@@ -135,8 +132,7 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
   PRIMARY KEY (`id`) USING BTREE,
   -- 原唯一索引（保留）：UNIQUE KEY `uk_order_user_voucher` (`user_id`, `voucher_id`) USING BTREE
   UNIQUE KEY `uk_order_user_voucher_active` (`user_id`, `voucher_id`, `active_order`) USING BTREE,
-  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`),
-  KEY `idx_order_status_restore` (`status`, `redis_stock_restored`, `id`)
+  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`)
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
 CREATE TABLE IF NOT EXISTS tb_voucher_order_router_0 (
@@ -248,6 +244,24 @@ CREATE TABLE IF NOT EXISTS `tb_user_info`  (
   PRIMARY KEY (`user_id`) USING BTREE
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
+CREATE TABLE IF NOT EXISTS tb_voucher_order_process_0 (
+    order_id BIGINT NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    voucher_id BIGINT UNSIGNED NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    PRIMARY KEY (order_id),
+    KEY idx_process_status_order (status, order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tb_voucher_order_process_1 (
+    order_id BIGINT NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    voucher_id BIGINT UNSIGNED NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    PRIMARY KEY (order_id),
+    KEY idx_process_status_order (status, order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 USE hmdp_1;
 
 CREATE TABLE IF NOT EXISTS `tb_shop_0`  (
@@ -348,7 +362,6 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_0`  (
   `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '订单状态，1：未支付；2：已支付；3：已核销；4：已取消；5：退款中；6：已退款',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
   `expire_time` datetime(3) NOT NULL COMMENT '支付截止时间，创建订单时确定',
-  `redis_stock_restored` tinyint(1) NOT NULL DEFAULT 0 COMMENT '已关闭订单的Redis库存返还是否完成',
   `active_order` tinyint GENERATED ALWAYS AS (CASE WHEN `status` = 4 THEN NULL ELSE 1 END) STORED COMMENT '未关闭订单唯一标记',
   `pay_time` timestamp NULL DEFAULT NULL COMMENT '支付时间',
   `use_time` timestamp NULL DEFAULT NULL COMMENT '核销时间',
@@ -357,8 +370,7 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_0`  (
   PRIMARY KEY (`id`) USING BTREE,
   -- 原唯一索引（保留）：UNIQUE KEY `uk_order_user_voucher` (`user_id`, `voucher_id`) USING BTREE
   UNIQUE KEY `uk_order_user_voucher_active` (`user_id`, `voucher_id`, `active_order`) USING BTREE,
-  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`),
-  KEY `idx_order_status_restore` (`status`, `redis_stock_restored`, `id`)
+  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`)
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
 CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
@@ -369,7 +381,6 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
   `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '订单状态，1：未支付；2：已支付；3：已核销；4：已取消；5：退款中；6：已退款',
   `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '下单时间',
   `expire_time` datetime(3) NOT NULL COMMENT '支付截止时间，创建订单时确定',
-  `redis_stock_restored` tinyint(1) NOT NULL DEFAULT 0 COMMENT '已关闭订单的Redis库存返还是否完成',
   `active_order` tinyint GENERATED ALWAYS AS (CASE WHEN `status` = 4 THEN NULL ELSE 1 END) STORED COMMENT '未关闭订单唯一标记',
   `pay_time` timestamp NULL DEFAULT NULL COMMENT '支付时间',
   `use_time` timestamp NULL DEFAULT NULL COMMENT '核销时间',
@@ -378,8 +389,7 @@ CREATE TABLE IF NOT EXISTS `tb_voucher_order_1`  (
   PRIMARY KEY (`id`) USING BTREE,
   -- 原唯一索引（保留）：UNIQUE KEY `uk_order_user_voucher` (`user_id`, `voucher_id`) USING BTREE
   UNIQUE KEY `uk_order_user_voucher_active` (`user_id`, `voucher_id`, `active_order`) USING BTREE,
-  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`),
-  KEY `idx_order_status_restore` (`status`, `redis_stock_restored`, `id`)
+  KEY `idx_order_status_expire` (`status`, `expire_time`, `id`)
 ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Compact;
 
 CREATE TABLE IF NOT EXISTS tb_voucher_order_router_0 (
@@ -406,4 +416,22 @@ CREATE TABLE IF NOT EXISTS tb_shop_voucher_index_1 (
     shop_id BIGINT UNSIGNED NOT NULL,
     voucher_id BIGINT UNSIGNED NOT NULL,
     PRIMARY KEY (shop_id, voucher_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tb_voucher_order_process_0 (
+    order_id BIGINT NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    voucher_id BIGINT UNSIGNED NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    PRIMARY KEY (order_id),
+    KEY idx_process_status_order (status, order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS tb_voucher_order_process_1 (
+    order_id BIGINT NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    voucher_id BIGINT UNSIGNED NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    PRIMARY KEY (order_id),
+    KEY idx_process_status_order (status, order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

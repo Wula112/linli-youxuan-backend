@@ -63,11 +63,6 @@ public class VoucherOrder implements Serializable {
     private LocalDateTime expireTime;
 
     /**
-     * 已关闭订单的Redis库存是否返还完成；失败时由定时扫描继续补偿。
-     */
-    private Boolean redisStockRestored;
-
-    /**
      * 支付时间
      */
     private LocalDateTime payTime;
