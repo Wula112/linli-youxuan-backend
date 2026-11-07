@@ -60,7 +60,7 @@ hm-dianping/
 
 公共模块只产出普通 jar，Spring Boot 打包插件只用于核心模块。现有 `com.hmdp.HmDianPingApplication` 继续扫描 `com.hmdp`，无需额外的自动配置框架。MyBatis 的 `com.hmdp.mapper` 扫描与实体别名包保持不变。
 
-核心模块中，HTTP 请求由 `controller` 进入 `service`；建单、模拟支付与超时关单分别委托给独立服务。建单、死信登记、对账和关单共用 `VoucherOrderProcessService` 的数据库处理记录及事务仲裁；`VoucherOrderCompensationService` 负责按已提交状态回补 Redis。`SeckillReservation` 封装预占、释放凭证和 pending 清理，`SeckillPendingRepository` 只负责 pending 扫描与领取。MQ 消费者处理下单、死信和关单消息；`job` 负责超时扫描及对账，不再补发订单消息。
+核心模块中，HTTP 请求由 `controller` 进入 `service`；建单、模拟支付与超时关单分别委托给独立服务。建单、死信登记、对账和关单共用 `VoucherOrderProcessService` 的数据库处理记录及事务仲裁；`VoucherOrderCompensationService` 只回补已关单订单，`SeckillCircuitBreaker` 保存死信熔断状态。`SeckillReservation` 封装预占、释放凭证和 pending 清理，`SeckillPendingRepository` 只负责 pending 扫描与领取。MQ 消费者处理下单、死信和关单消息；`job` 恢复建单并处理关单返库，不再补发订单消息。
 
 Redis 预占与回退接口接收优惠券、用户和订单标识，不依赖 MQ 消息类；MQ 消息格式仍由 `mq.message` 管理。滚动分页结果使用公共 DTO，Web 异常处理归入 HTTP 层。测试位于核心模块，并尽量与被测组件的包位置对应；基础组件不依赖业务模块。
 

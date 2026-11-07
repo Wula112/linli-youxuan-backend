@@ -24,6 +24,6 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
     /** 模拟支付，不对接支付渠道、不实际扣款。 */
     Result<Long> mockPay(Long orderId, Integer payType);
 
-    /** 超时条件关单；MySQL提交后幂等返还Redis库存并释放本订单购买资格。 */
+    /** 超时条件关单；MySQL提交后由对账任务幂等返还Redis库存。 */
     void closeExpiredOrder(Long orderId);
 }

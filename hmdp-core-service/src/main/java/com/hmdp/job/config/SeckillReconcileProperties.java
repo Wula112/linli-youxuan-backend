@@ -16,7 +16,7 @@ public class SeckillReconcileProperties {
     private boolean enabled = true;
     private Duration interval = Duration.ofMinutes(1);
     // 初次核查的超时阈值，也是每次核查之间的最短等待时间。
-    private Duration pendingTimeout = Duration.ofMinutes(5);
+    private Duration pendingTimeout = Duration.ofMinutes(2);
     private int batchSize = 100;
 
     @PostConstruct

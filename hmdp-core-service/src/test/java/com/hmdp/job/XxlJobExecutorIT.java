@@ -7,8 +7,14 @@ import com.hmdp.config.VoucherOrderProperties;
 import com.hmdp.framework.job.config.XxlJobConfig;
 import com.hmdp.job.config.*;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.mapper.VoucherOrderProcessMapper;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
+import com.hmdp.repository.redis.SeckillPendingRepository;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.IVoucherOrderService;
+import com.hmdp.service.impl.SeckillCircuitBreaker;
+import com.hmdp.service.impl.VoucherOrderCompensationService;
+import com.hmdp.service.impl.VoucherOrderCreateService;
 import com.sun.net.httpserver.HttpServer;
 import com.xxl.job.core.constant.Const;
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
@@ -105,6 +111,16 @@ class XxlJobExecutorIT {
             context.registerBean(StringRedisTemplate.class, () -> redis);
             context.registerBean(RedissonClient.class, () -> redisson);
             context.registerBean(VoucherOrderMapper.class, () -> orders);
+            context.registerBean(VoucherOrderProcessMapper.class, () -> mock(VoucherOrderProcessMapper.class));
+            context.registerBean(SeckillPendingRepository.class, () -> mock(SeckillPendingRepository.class));
+            context.registerBean(SeckillReservation.class, () -> mock(SeckillReservation.class));
+            // 注册现成桩，避免 Spring 对 Mockito 对象再次执行 @Resource 注入。
+            context.getBeanFactory().registerSingleton("voucherOrderCreateService", mock(VoucherOrderCreateService.class));
+            context.registerBean(VoucherOrderCompensationService.class, () -> mock(VoucherOrderCompensationService.class));
+            SeckillCircuitBreaker circuit = mock(SeckillCircuitBreaker.class);
+            when(circuit.isOpen()).thenReturn(true);
+            when(circuit.incident()).thenReturn("integration-dead-letter");
+            context.registerBean(SeckillCircuitBreaker.class, () -> circuit);
             context.registerBean(CacheWarmupService.class, () -> warmup);
             context.registerBean(VoucherOrderPublisher.class, () -> mock(VoucherOrderPublisher.class));
             context.registerBean(IVoucherOrderService.class, () -> mock(IVoucherOrderService.class));
@@ -136,7 +152,7 @@ class XxlJobExecutorIT {
                 assertEquals(200, gson.fromJson(response, com.google.gson.JsonObject.class).get("code").getAsInt(), response);
             }
             await().atMost(Duration.ofSeconds(15)).until(() -> callbacks.size() == 4);
-            assertEquals(Map.of(1L, 200, 2L, 500, 3L, 200, 4L, 500), callbacks);
+            assertEquals(Map.of(1L, 200, 2L, 500, 3L, 500, 4L, 500), callbacks);
             verify(warmup, times(2)).warmShopTypesRedis();
             verify(warmup, times(1)).warmVouchersLocal(1L);
         } finally {

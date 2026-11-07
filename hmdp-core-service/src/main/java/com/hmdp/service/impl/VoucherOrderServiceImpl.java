@@ -2,9 +2,10 @@ package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.hmdp.common.dto.Result;
-import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.entity.VoucherOrderProcess;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.mapper.VoucherOrderProcessMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mq.producer.VoucherOrderPublisher;
 import com.hmdp.repository.redis.SeckillReservation;
@@ -330,12 +331,19 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private VoucherOrderCloseService voucherOrderCloseService;
     @Resource
-    private VoucherOrderProcessService voucherOrderProcessService;
+    private VoucherOrderProcessMapper voucherOrderProcessMapper;
+    @Resource
+    private SeckillReservation seckillReservation;
+    @Resource
+    private SeckillCircuitBreaker circuitBreaker;
 
     @Override
     public Result<Long> secKillVoucher(Long voucherId) {
         if (voucherId == null || voucherId <= 0) {
             return Result.fail("优惠券不存在");
+        }
+        if (circuitBreaker.isOpen()) {
+            return Result.fail("秒杀服务暂不可用，请稍后重试");
         }
         Long userId = UserHolder.getUser().getId();
         long orderId = identifierGenerator.nextId(new VoucherOrder()).longValue();
@@ -343,7 +351,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         // 先发半消息，秒杀 Lua（扣库存、一人一单、写事务标记）在本地事务中执行，成功才提交消息
         long result = voucherOrderPublisher.sendInTransaction(message);
         if (result == SeckillReservation.SUCCESS) {
-            // 只代表请求已受理，数据库订单由消费者创建
+            // 请求已受理；MQ、用户查询和对账均可恢复建单。
             return Result.ok(orderId);
         }
         if (result == SeckillReservation.STOCK_EMPTY) {
@@ -352,9 +360,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (result == SeckillReservation.DUPLICATE) {
             return Result.fail("一人只能购买一单");
         }
-        // 本地事务没有给出确定结果：回退预扣，避免库存被长期占用
-        log.error("秒杀本地事务结果未知，尝试回退预扣，message={}", message);
-        return rollbackReservation(message);
+        if (result == SeckillReservation.CIRCUIT_OPEN) {
+            return Result.fail("秒杀服务暂不可用，请稍后重试");
+        }
+        // 结果未知不代表预占失败，不能回补可能已受理的请求。
+        return resolveUnknownReservation(message);
     }
 
     @Override
@@ -378,11 +388,55 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if (UserHolder.getUser() == null) {
             return Result.fail("请先登录");
         }
-        VoucherOrder order = getById(orderId);
-        if (order == null || !UserHolder.getUser().getId().equals(order.getUserId())) {
-            return Result.fail("订单不存在");
+        VoucherOrder order;
+        try {
+            order = getById(orderId);
+        } catch (Exception ex) {
+            log.error("查询订单失败，orderId={}", orderId, ex);
+            return Result.fail("订单正在处理中，请稍后查询");
         }
-        return Result.ok(order);
+        Long userId = UserHolder.getUser().getId();
+        if (order != null) {
+            return userId.equals(order.getUserId()) ? Result.ok(order) : Result.fail("订单不存在");
+        }
+        VoucherOrderMessage request;
+        try {
+            String member = seckillReservation.findAcceptedRequestMember(orderId);
+            request = member == null ? null : VoucherOrderMessage.fromPendingMember(member);
+            if (request == null) {
+                // 兼容升级前已登记的死信等处理记录。
+                VoucherOrderProcess process = voucherOrderProcessMapper.selectById(orderId);
+                if (process != null) {
+                    request = new VoucherOrderMessage(orderId, process.getUserId(), process.getVoucherId());
+                }
+            }
+        } catch (Exception ex) {
+            log.error("查询订单请求失败，orderId={}", orderId, ex);
+            return Result.fail("订单正在处理中，请稍后查询");
+        }
+        if (request == null) {
+            // 提交后清理索引可能与首次查询并发；再次读取已提交订单。
+            try {
+                order = getById(orderId);
+                if (order != null && userId.equals(order.getUserId())) return Result.ok(order);
+                return Result.fail("订单不存在");
+            } catch (Exception ex) {
+                log.error("重查订单失败，orderId={}", orderId, ex);
+                return Result.fail("订单正在处理中，请稍后查询");
+            }
+        }
+        if (!userId.equals(request.userId())) return Result.fail("订单不存在");
+        try {
+            // 与 MQ 和对账共用事务建单入口，数据库处理记录保证并发幂等。
+            voucherOrderCreateService.createVoucherOrder(new VoucherOrder().setId(request.orderId())
+                    .setUserId(request.userId()).setVoucherId(request.voucherId()));
+            order = getById(orderId);
+            return order != null && userId.equals(order.getUserId())
+                    ? Result.ok(order) : Result.fail("订单正在处理中，请稍后查询");
+        } catch (Exception ex) {
+            log.error("查询时恢复建单失败，orderId={}", orderId, ex);
+            return Result.fail("订单正在处理中，请稍后查询");
+        }
     }
 
     @Override
@@ -395,22 +449,18 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         voucherOrderCloseService.closeExpiredOrder(orderId);
     }
 
-    private Result<Long> rollbackReservation(VoucherOrderMessage message) {
+    private Result<Long> resolveUnknownReservation(VoucherOrderMessage message) {
         try {
-            // 与消费者争夺同一数据库处理记录；Redis 释放由对账任务执行。
-            OrderProcessStatus status = voucherOrderProcessService.requestCompensation(
-                    message.orderId(), message.userId(), message.voucherId());
-            if (status == OrderProcessStatus.CREATED) {
-                // 发布确认丢失，但消费者已完成订单，不能恢复库存。
-                voucherOrderCreateService.clearPendingAfterCommit(new VoucherOrder().setId(message.orderId())
-                        .setUserId(message.userId()).setVoucherId(message.voucherId()));
+            if (message.pendingMember().equals(seckillReservation.findAcceptedRequestMember(message.orderId()))) {
                 return Result.ok(message.orderId());
             }
-            return Result.fail("订单提交失败，请稍后重试");
+            VoucherOrder order = getById(message.orderId());
+            if (order != null && message.userId().equals(order.getUserId())
+                    && message.voucherId().equals(order.getVoucherId())) return Result.ok(message.orderId());
         } catch (Exception ex) {
-            log.error("秒杀预扣回退失败，需核对订单与预扣记录，message={}", message, ex);
-            return pendingResult(message);
+            log.error("无法确认秒杀预占结果，message={}", message, ex);
         }
+        return pendingResult(message);
     }
 
     private Result<Long> pendingResult(VoucherOrderMessage message) {

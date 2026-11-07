@@ -22,7 +22,8 @@ class SeckillReservationTest {
         assertEquals(SeckillReservation.SUCCESS, reservation.reserve(10L, 5L, 1000L));
 
         verify(redis).execute(any(RedisScript.class),
-                eq(List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending", "seckill:txn:1000")),
+                eq(List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending", "seckill:txn:1000",
+                        "seckill:requests", "seckill:order:circuit")),
                 eq("5"), eq("1000"), eq("10"), anyString(), eq("3600"));
     }
 
@@ -49,7 +50,7 @@ class SeckillReservationTest {
 
         verify(redis).execute(any(RedisScript.class),
                 eq(List.of("seckill:stock:10", "seckill:reservation:10", "seckill:pending",
-                        "seckill:pending:retries", "seckill:released:1000")),
+                        "seckill:pending:retries", "seckill:released:1000", "seckill:requests")),
                 eq("5"), eq("1000"), eq("10:5:1000"));
     }
 
@@ -65,7 +66,8 @@ class SeckillReservationTest {
     void shouldClearPendingWithItsRetryCounter() {
         reservation.clearPending("10:5:1000");
 
-        verify(redis).execute(any(RedisScript.class), eq(List.of("seckill:pending", "seckill:pending:retries")),
-                eq("10:5:1000"));
+        verify(redis).execute(any(RedisScript.class),
+                eq(List.of("seckill:pending", "seckill:pending:retries", "seckill:requests")),
+                eq("10:5:1000"), eq("1000"));
     }
 }

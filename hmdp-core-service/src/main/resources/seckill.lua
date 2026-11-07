@@ -49,8 +49,12 @@
 --
 
 -- ===== 当前实现：Hash校验一人一单，原子登记pending并写事务标记 =====
--- KEYS: 库存Key、优惠券预占Hash、全局待对账ZSet、本订单事务标记
+-- KEYS: 库存、预占Hash、待对账ZSet、事务标记、订单请求Hash、熔断标记
 -- ARGV: userId、orderId、voucherId、预占时间戳（毫秒）、事务标记TTL（秒）
+-- 与预占写入同一脚本，熔断后新请求不能再成功预占。
+if redis.call('exists', KEYS[6]) == 1 then
+    return 3
+end
 if redis.call('hexists', KEYS[2], ARGV[1]) == 1 then
     return 2
 end
@@ -61,6 +65,7 @@ end
 redis.call('decr', KEYS[1])
 redis.call('hset', KEYS[2], ARGV[1], ARGV[2])
 redis.call('zadd', KEYS[3], ARGV[4], ARGV[3] .. ':' .. ARGV[1] .. ':' .. ARGV[2])
+redis.call('hset', KEYS[5], ARGV[2], ARGV[3] .. ':' .. ARGV[1] .. ':' .. ARGV[2])
 -- 与扣减同一个脚本原子写入：Broker 回查到标记就提交半消息，查不到就回滚
 redis.call('set', KEYS[4], ARGV[2], 'EX', ARGV[5])
 return 0

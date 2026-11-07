@@ -50,19 +50,6 @@ public class VoucherOrderProcessService {
         }
     }
 
-    /** 事务提交后才允许执行 Redis 回补。已建单时返回 CREATED。 */
-    @Transactional(rollbackFor = Exception.class)
-    public OrderProcessStatus requestCompensation(Long orderId, Long userId, Long voucherId) {
-        VoucherOrderProcess process = lock(orderId, userId, voucherId);
-        OrderProcessStatus current = OrderProcessStatus.valueOf(process.getStatus());
-        if (current == OrderProcessStatus.PENDING || current == OrderProcessStatus.DEAD_LETTER) {
-            if (markExistingOrder(process)) return OrderProcessStatus.CREATED;
-            transition(process, OrderProcessStatus.COMPENSATING);
-            return OrderProcessStatus.COMPENSATING;
-        }
-        return current;
-    }
-
     /** 升级期历史订单可能尚未有处理记录；绝不能将已建单订单当作缺失订单回补。 */
     private boolean markExistingOrder(VoucherOrderProcess process) {
         VoucherOrder order = orders.selectRoutedOrder(process.getOrderId(), process.getUserId(), process.getVoucherId());

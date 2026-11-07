@@ -38,7 +38,6 @@ import com.hmdp.service.impl.VoucherOrderProcessService;
 import com.hmdp.service.impl.VoucherOrderCompensationService;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.mq.message.VoucherOrderMessage;
-import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.service.impl.VoucherServiceImpl;
 import com.hmdp.common.context.UserHolder;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -245,7 +244,7 @@ class ShardingXaIT {
     }
 
     @Test
-    void shouldSerializeOrderCreationAgainstDeadLetterCompensation() throws Exception {
+    void shouldSerializeOrderCreationAgainstDeadLetterRegistration() throws Exception {
         seedVoucher(100L);
         reserve(1000L);
         VoucherOrderProcessService processes = context.getBean(VoucherOrderProcessService.class);
@@ -257,25 +256,51 @@ class ShardingXaIT {
                 orderService.createVoucherOrder(order(1000L, 101L, 100L));
                 return null;
             });
-            var compensate = workers.submit(() -> {
+            var deadLetter = workers.submit(() -> {
                 start.await();
                 processes.recordDeadLetter(event);
-                return processes.requestCompensation(1000L, 101L, 100L);
+                return null;
             });
             start.countDown();
             create.get(20, java.util.concurrent.TimeUnit.SECONDS);
-            OrderProcessStatus decision = compensate.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            deadLetter.get(20, java.util.concurrent.TimeUnit.SECONDS);
             VoucherOrderProcess current = context.getBean(VoucherOrderProcessMapper.class).selectById(1000L);
-            if (decision == OrderProcessStatus.CREATED) {
-                assertEquals("CREATED", current.getStatus());
-                assertNotNull(orders.selectRoutedOrder(1000L, 101L, 100L));
-                assertEquals(1, stock(100L));
-            } else {
-                assertEquals(OrderProcessStatus.COMPENSATING, decision);
-                assertEquals("COMPENSATING", current.getStatus());
-                assertNull(orders.selectRoutedOrder(1000L, 101L, 100L));
-                assertEquals(2, stock(100L));
-            }
+            assertEquals("CREATED", current.getStatus());
+            assertNotNull(orders.selectRoutedOrder(1000L, 101L, 100L));
+            assertEquals(1, stock(100L));
+        }
+    }
+
+    @Test
+    void queryAndConsumerCreateTheSameAcceptedOrderOnlyOnce() throws Exception {
+        seedVoucher(100L);
+        reserve(1000L);
+        HashOperations<String, Object, Object> hashes = context.getBean(StringRedisTemplate.class).opsForHash();
+        when(hashes.get("seckill:requests", "1000")).thenReturn("100:101:1000");
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var consumer = workers.submit(() -> {
+                start.await();
+                orderService.createVoucherOrder(order(1000L, 101L, 100L));
+                return null;
+            });
+            var query = workers.submit(() -> {
+                UserDTO user = new UserDTO();
+                user.setId(101L);
+                UserHolder.saveUser(user);
+                try {
+                    start.await();
+                    return orderService.queryVoucherOrder(1000L);
+                } finally {
+                    UserHolder.removeUser();
+                }
+            });
+            start.countDown();
+            consumer.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(query.get(20, java.util.concurrent.TimeUnit.SECONDS).getSuccess());
+            assertEquals(1, stock(100L));
+            assertEquals(1, count("hmdp_1.tb_voucher_order_0"));
+            assertEquals("CREATED", context.getBean(VoucherOrderProcessMapper.class).selectById(1000L).getStatus());
         }
     }
 
@@ -426,8 +451,11 @@ class ShardingXaIT {
             return new VoucherOrderProcessService(mapper, orders);
         }
         @Bean VoucherOrderCompensationService voucherOrderCompensationService(VoucherOrderProcessMapper mapper,
-                VoucherOrderProcessService processes, SeckillReservation reservation) {
-            return new VoucherOrderCompensationService(mapper, processes, reservation);
+                VoucherOrderProcessService processes, SeckillReservation reservation, VoucherOrderMapper orders) {
+            return new VoucherOrderCompensationService(mapper, processes, reservation, orders);
+        }
+        @Bean com.hmdp.service.impl.SeckillCircuitBreaker circuitBreaker(StringRedisTemplate redis) {
+            return new com.hmdp.service.impl.SeckillCircuitBreaker(redis);
         }
         @Bean SeckillReservation seckillReservation(StringRedisTemplate redis) { return new SeckillReservation(redis); }
         @Bean ISeckillVoucherService seckillVoucherService() { return new SeckillVoucherServiceImpl(); }

@@ -1,7 +1,10 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.common.enums.OrderProcessStatus;
+import com.hmdp.common.enums.VoucherOrderStatus;
+import com.hmdp.entity.VoucherOrder;
 import com.hmdp.entity.VoucherOrderProcess;
+import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mapper.VoucherOrderProcessMapper;
 import com.hmdp.repository.redis.SeckillReservation;
 import lombok.RequiredArgsConstructor;
@@ -14,11 +17,16 @@ public class VoucherOrderCompensationService {
     private final VoucherOrderProcessMapper mapper;
     private final VoucherOrderProcessService processService;
     private final SeckillReservation reservation;
+    private final VoucherOrderMapper orders;
 
     public void compensate(Long orderId) {
         VoucherOrderProcess process = mapper.selectById(orderId);
         if (process == null || !OrderProcessStatus.COMPENSATING.name().equals(process.getStatus())) {
             return;
+        }
+        VoucherOrder order = orders.selectRoutedOrder(orderId, process.getUserId(), process.getVoucherId());
+        if (order == null || !Integer.valueOf(VoucherOrderStatus.CLOSED.getCode()).equals(order.getStatus())) {
+            throw new IllegalStateException("仅已关闭订单可以返还预占，orderId=" + orderId);
         }
         Long result = reservation.rollback(process.getVoucherId(), process.getUserId(), orderId);
         if (result == null || (result != 1L && result != 2L)) {

@@ -32,6 +32,10 @@ public class RedisConstants {
     // 旧版Set Key，保留给历史代码对照；当前使用reservation Hash校验一人一单。
     public static final String SECKILL_ORDER_KEY = "seckill:order:";
     public static final String SECKILL_RESERVATION_KEY = "seckill:reservation:";
+    /** 未建单请求的反向索引：orderId -> voucherId:userId:orderId。 */
+    public static final String SECKILL_REQUESTS_KEY = "seckill:requests";
+    /** 下单消费异常时的全局熔断标记，由运维确认后手动恢复。 */
+    public static final String SECKILL_CIRCUIT_KEY = "seckill:order:circuit";
     /** 每笔订单的预占释放凭证，不能在可能重试或重放时提前删除。 */
     public static final String SECKILL_RELEASED_KEY = "seckill:released:";
     public static final String SECKILL_PENDING_KEY = "seckill:pending";

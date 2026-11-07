@@ -33,7 +33,7 @@ public class SeckillTransactionListener implements TransactionListener {
             if (result == SeckillReservation.SUCCESS) {
                 return LocalTransactionState.COMMIT_MESSAGE;
             }
-            // 库存不足或重复下单：半消息丢弃，不会投递给消费者
+            // 库存不足、重复下单或熔断：半消息丢弃，不会投递给消费者。
             return LocalTransactionState.ROLLBACK_MESSAGE;
         } catch (Exception ex) {
             log.error("秒杀本地事务执行异常，等待Broker回查事务标记，orderId={}", order.orderId(), ex);

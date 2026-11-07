@@ -120,9 +120,9 @@ java -jar hmdp-core-service/target/hm-dianping-0.0.1-SNAPSHOT.jar --hmdp.cache.s
 
 ## 秒杀订单对账
 
-系统通过 Redis 记录库存预占和待处理订单；RocketMQ 消费重试耗尽后，由独立消费者登记死信。
+系统通过 Redis 记录库存预占和待处理订单。用户查询或对账发现订单未创建时，会直接尝试建单。
 
-对账任务默认每分钟执行，核查 5 分钟前的预占，每批最多 100 条，并处理待补偿订单。未确认消费结果的预占会保留，Redis 凭证防止重复返库。
+对账任务默认核查 2 分钟前的预占，并返还超时关单的库存。消费重试耗尽时触发熔断和 XXL-JOB 失败告警，已受理订单继续处理。
 
 配置项为 `hmdp.seckill.reconcile`。详见[订单对账说明](docs/seckill-order-reconcile.md)。
 

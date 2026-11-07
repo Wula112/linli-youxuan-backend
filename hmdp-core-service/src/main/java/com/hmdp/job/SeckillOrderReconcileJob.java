@@ -12,7 +12,8 @@ import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.repository.redis.SeckillPendingRepository;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.impl.VoucherOrderCompensationService;
-import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.VoucherOrderCreateService;
+import com.hmdp.service.impl.SeckillCircuitBreaker;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +28,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/** 核查 Redis 预占并处理死信和关单留下的补偿，不再补发下单消息。 */
+/** 核查受理请求、恢复建单并处理关单后的 Redis 返库。 */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -39,8 +40,9 @@ public class SeckillOrderReconcileJob {
     private final SeckillPendingRepository pendingRepository;
     private final VoucherOrderMapper orders;
     private final VoucherOrderProcessMapper processes;
-    private final VoucherOrderProcessService processService;
+    private final VoucherOrderCreateService createService;
     private final VoucherOrderCompensationService compensationService;
+    private final SeckillCircuitBreaker circuitBreaker;
     private final SeckillReservation reservation;
     private final SeckillReconcileProperties properties;
     private final JobProperties jobProperties;
@@ -64,6 +66,13 @@ public class SeckillOrderReconcileJob {
             if (!acquired) {
                 run.skipped();
                 return run;
+            }
+            // 熔断标记保持到人工恢复；每轮向 Admin 上报失败，触发配置好的告警。
+            if (circuitBreaker.isOpen()) {
+                String incident = circuitBreaker.incident();
+                log.error("秒杀订单消费重试耗尽，熔断中，首个死信msgId={}", incident);
+                XxlJobHelper.log("秒杀订单消费重试耗尽，熔断中，首个死信msgId={}", incident);
+                run.failed();
             }
             long phaseNanos = Math.max(1, jobProperties.getMaxRunTime().toNanos() / 3);
             scanPending(run, System.nanoTime() + phaseNanos);
@@ -94,8 +103,8 @@ public class SeckillOrderReconcileJob {
                 VoucherOrderMessage event = VoucherOrderMessage.fromPendingMember(member);
                 VoucherOrder order = orders.selectRoutedOrder(event.orderId(), event.userId(), event.voucherId());
                 if (order == null) {
-                    // 没有死信记录不代表消息丢失；保留预占，等待 RocketMQ 重试或死信登记。
-                    log.warn("订单尚未建单，保留预占等待消费或死信，orderId={}", event.orderId());
+                    // 不再等待 MQ；与消费者、订单查询使用同一事务入口并按处理记录仲裁。
+                    createService.createVoucherOrder(toOrder(event));
                     continue;
                 }
                 if (!Objects.equals(order.getId(), event.orderId())
@@ -105,7 +114,7 @@ public class SeckillOrderReconcileJob {
                 }
                 reservation.clearPending(member);
             } catch (Exception ex) {
-                fail("核查预占失败，member=" + member, ex, run);
+                fail("核查或恢复预占失败，member=" + member, ex, run);
             }
         }
     }
@@ -130,12 +139,18 @@ public class SeckillOrderReconcileJob {
                     run.checked();
                     try {
                         if (status == OrderProcessStatus.DEAD_LETTER) {
-                            processService.requestCompensation(row.getOrderId(), row.getUserId(), row.getVoucherId());
+                            createService.createVoucherOrder(toOrder(row));
                         } else {
-                            compensationService.compensate(row.getOrderId());
+                            VoucherOrder order = orders.selectRoutedOrder(row.getOrderId(), row.getUserId(), row.getVoucherId());
+                            if (order == null) {
+                                // 兼容升级前未执行 Redis 返库的历史补偿决策。
+                                createService.createVoucherOrder(toOrder(row));
+                            } else {
+                                compensationService.compensate(row.getOrderId());
+                            }
                         }
                     } catch (Exception ex) {
-                        fail("处理订单补偿失败，orderId=" + row.getOrderId(), ex, run);
+                        fail("恢复订单处理失败，orderId=" + row.getOrderId(), ex, run);
                     }
                     cursor = row.getOrderId();
                 }
@@ -157,6 +172,14 @@ public class SeckillOrderReconcileJob {
             return false;
         }
         return true;
+    }
+
+    private VoucherOrder toOrder(VoucherOrderMessage event) {
+        return new VoucherOrder().setId(event.orderId()).setUserId(event.userId()).setVoucherId(event.voucherId());
+    }
+
+    private VoucherOrder toOrder(VoucherOrderProcess row) {
+        return new VoucherOrder().setId(row.getOrderId()).setUserId(row.getUserId()).setVoucherId(row.getVoucherId());
     }
 
     private void saveCursor(String field, long cursor) {

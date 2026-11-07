@@ -3,7 +3,8 @@ package com.hmdp.job;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.mq.message.VoucherOrderMessage;
 import com.hmdp.mapper.VoucherOrderProcessMapper;
-import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.VoucherOrderCreateService;
+import com.hmdp.service.impl.SeckillCircuitBreaker;
 import com.hmdp.service.impl.VoucherOrderCompensationService;
 import com.hmdp.repository.redis.SeckillPendingRepository;
 import com.hmdp.repository.redis.SeckillReservation;
@@ -50,7 +51,9 @@ class SeckillReconcileConfigTest {
                 .withBean(StringRedisTemplate.class, () -> redis)
                 .withBean(VoucherOrderMapper.class, () -> mock(VoucherOrderMapper.class))
                 .withBean(VoucherOrderProcessMapper.class, () -> mock(VoucherOrderProcessMapper.class))
-                .withBean(VoucherOrderProcessService.class, () -> mock(VoucherOrderProcessService.class))
+                .withInitializer(ctx -> ctx.getBeanFactory().registerSingleton("voucherOrderCreateService",
+                        mock(VoucherOrderCreateService.class)))
+                .withBean(SeckillCircuitBreaker.class, () -> mock(SeckillCircuitBreaker.class))
                 .withBean(VoucherOrderCompensationService.class, () -> mock(VoucherOrderCompensationService.class))
                 .withBean(RedissonClient.class, () -> mock(RedissonClient.class))
                 .withPropertyValues("hmdp.seckill.reconcile.interval=1m")
@@ -65,7 +68,7 @@ class SeckillReconcileConfigTest {
     void shouldValidateBoundsAndKeepConservativeDefaults() {
         var properties = new SeckillReconcileProperties();
         assertEquals(Duration.ofMinutes(1), properties.getInterval());
-        assertEquals(Duration.ofMinutes(5), properties.getPendingTimeout());
+        assertEquals(Duration.ofMinutes(2), properties.getPendingTimeout());
         assertEquals(100, properties.getBatchSize());
         assertDoesNotThrow(properties::validate);
         properties.setBatchSize(0);

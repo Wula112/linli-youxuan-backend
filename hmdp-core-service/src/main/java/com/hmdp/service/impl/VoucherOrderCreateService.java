@@ -27,7 +27,7 @@ import java.time.temporal.ChronoUnit;
  * 秒杀订单建单：数据库库存扣减、订单落库、分片路由补齐与提交后动作。
  *
  * <p>建单事务由本类方法上的 {@code @Transactional} 开启，必须经 Spring 代理调用：
- * MQ 消费者在持有订单锁时调用，锁范围覆盖整个数据库事务；门面只做委托，
+ * MQ、用户查询和对账都经同一事务入口，以数据库处理记录串行化；门面只做委托，
  * 避免同类自调用绕过代理导致事务注解失效。
  */
 @Slf4j
@@ -61,12 +61,24 @@ public class VoucherOrderCreateService {
         VoucherOrderProcess process = processService.lock(voucherOrder.getId(),
                 voucherOrder.getUserId(), voucherOrder.getVoucherId());
         OrderProcessStatus status = OrderProcessStatus.valueOf(process.getStatus());
-        if (status == OrderProcessStatus.COMPENSATING || status == OrderProcessStatus.COMPENSATED) {
-            log.info("忽略已终止的秒杀订单，orderId={}", voucherOrder.getId());
-            return;
-        }
         // 幂等性，同一订单重复投递直接成功，ACK 丢失后重投也不会再次扣减库存。
         VoucherOrder existing = findExistingOrder(voucherOrder.getId());
+        if (status == OrderProcessStatus.COMPENSATING || status == OrderProcessStatus.COMPENSATED) {
+            if (existing != null && Integer.valueOf(VoucherOrderStatus.CLOSED.getCode()).equals(existing.getStatus())) {
+                log.info("忽略已关闭订单的迟到消息，orderId={}", voucherOrder.getId());
+                return;
+            }
+            // 升级前的未建单补偿决策：只有预占仍属本单且尚无返库凭证才可恢复建单。
+            Object owner = seckillReservation.getReservedOrderId(voucherOrder.getVoucherId(), voucherOrder.getUserId());
+            if (status == OrderProcessStatus.COMPENSATING && existing == null
+                    && voucherOrder.getId().toString().equals(owner)
+                    && !seckillReservation.hasReleaseReceipt(voucherOrder.getId())) {
+                processService.transition(process, OrderProcessStatus.PENDING);
+                status = OrderProcessStatus.PENDING;
+            } else {
+                throw new IllegalStateException("历史补偿状态无法安全恢复建单，orderId=" + voucherOrder.getId());
+            }
+        }
         if (existing != null) {
             if (!existing.getUserId().equals(voucherOrder.getUserId())
                     || !existing.getVoucherId().equals(voucherOrder.getVoucherId())) {
@@ -97,9 +109,8 @@ public class VoucherOrderCreateService {
                 .eq("voucher_id", voucherOrder.getVoucherId())
                 .ne("status", VoucherOrderStatus.CLOSED.getCode()));
         if (count > 0) {
-            // 已有有效订单时不能再次建单，但本次预占仍需由对账释放。
-            processService.transition(process, OrderProcessStatus.COMPENSATING);
-            return;
+            // 不把已受理请求当作成功消费或直接返库；保留请求并报警核查冲突。
+            throw new IllegalStateException("同一用户已有其他有效订单，orderId=" + voucherOrder.getId());
         }
         boolean success = seckillVoucherService.update().setSql("stock = stock - 1")
                 .eq("voucher_id", voucherOrder.getVoucherId()).gt("stock", 0).update();

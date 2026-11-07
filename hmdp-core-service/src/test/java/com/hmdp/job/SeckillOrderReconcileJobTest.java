@@ -9,7 +9,8 @@ import com.hmdp.mapper.VoucherOrderProcessMapper;
 import com.hmdp.repository.redis.SeckillPendingRepository;
 import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.service.impl.VoucherOrderCompensationService;
-import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.VoucherOrderCreateService;
+import com.hmdp.service.impl.SeckillCircuitBreaker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
@@ -28,15 +29,16 @@ class SeckillOrderReconcileJobTest {
     private final SeckillPendingRepository pending = mock(SeckillPendingRepository.class);
     private final VoucherOrderMapper orders = mock(VoucherOrderMapper.class);
     private final VoucherOrderProcessMapper processes = mock(VoucherOrderProcessMapper.class);
-    private final VoucherOrderProcessService processService = mock(VoucherOrderProcessService.class);
+    private final VoucherOrderCreateService creator = mock(VoucherOrderCreateService.class);
     private final VoucherOrderCompensationService compensation = mock(VoucherOrderCompensationService.class);
+    private final SeckillCircuitBreaker circuit = mock(SeckillCircuitBreaker.class);
     private final SeckillReservation reservation = mock(SeckillReservation.class);
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private final HashOperations<String, Object, Object> cursors = mock(HashOperations.class);
     private final RedissonClient redisson = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
     private final SeckillOrderReconcileJob job = new SeckillOrderReconcileJob(
-            pending, orders, processes, processService, compensation, reservation,
+            pending, orders, processes, creator, compensation, circuit, reservation,
             new SeckillReconcileProperties(), new JobProperties(), redis, redisson);
 
     @BeforeEach
@@ -56,15 +58,17 @@ class SeckillOrderReconcileJobTest {
                 .thenReturn(new VoucherOrder().setId(1000L).setUserId(5L).setVoucherId(10L));
         assertTrue(job.reconcileBatch().successful());
         verify(reservation).clearPending("10:5:1000");
-        verifyNoInteractions(processService, compensation);
+        verifyNoInteractions(creator, compensation);
     }
 
     @Test
-    void shouldLeaveUnconfirmedPendingToRocketMqWithoutCompensating() {
+    void shouldCreateOrderForUnconfirmedPendingWithoutCompensating() {
         when(pending.findDue(anyLong(), anyInt())).thenReturn(Set.of("10:5:1000"));
         when(pending.claim(eq("10:5:1000"), anyLong())).thenReturn(true);
         assertTrue(job.reconcileBatch().successful());
-        verifyNoInteractions(processService, compensation, reservation);
+        verify(creator).createVoucherOrder(argThat(o -> o.getId().equals(1000L)
+                && o.getUserId().equals(5L) && o.getVoucherId().equals(10L)));
+        verifyNoInteractions(compensation, reservation);
     }
 
     @Test
@@ -73,8 +77,9 @@ class SeckillOrderReconcileJobTest {
         var restoring = process(1001, "COMPENSATING");
         when(processes.findByStatusAfter("DEAD_LETTER", 0, 100)).thenReturn(List.of(failed));
         when(processes.findByStatusAfter("COMPENSATING", 0, 100)).thenReturn(List.of(restoring));
+        when(orders.selectRoutedOrder(1001L, 5L, 10L)).thenReturn(new VoucherOrder().setStatus(4));
         assertTrue(job.reconcileBatch().successful());
-        verify(processService).requestCompensation(1000L, 5L, 10L);
+        verify(creator).createVoucherOrder(argThat(o -> o.getId().equals(1000L)));
         verify(compensation).compensate(1001L);
     }
 
@@ -82,6 +87,7 @@ class SeckillOrderReconcileJobTest {
     void shouldReportFailureAndContinueOtherCompensations() {
         when(processes.findByStatusAfter("COMPENSATING", 0, 100))
                 .thenReturn(List.of(process(1000, "COMPENSATING"), process(1001, "COMPENSATING")));
+        when(orders.selectRoutedOrder(anyLong(), eq(5L), eq(10L))).thenReturn(new VoucherOrder().setStatus(4));
         doThrow(new IllegalStateException("Redis unavailable")).when(compensation).compensate(1000L);
         assertFalse(job.reconcileBatch().successful());
         verify(compensation).compensate(1001L);
@@ -103,6 +109,25 @@ class SeckillOrderReconcileJobTest {
         when(lock.tryLock()).thenReturn(false);
         assertTrue(job.reconcileBatch().successful());
         verifyNoInteractions(pending, orders, processes);
+    }
+
+    @Test
+    void openCircuitReportsFailureButStillRecoversAcceptedOrders() {
+        when(circuit.isOpen()).thenReturn(true);
+        when(circuit.incident()).thenReturn("mq-123");
+        when(pending.findDue(anyLong(), anyInt())).thenReturn(Set.of("10:5:1000"));
+        when(pending.claim(eq("10:5:1000"), anyLong())).thenReturn(true);
+        assertFalse(job.reconcileBatch().successful());
+        verify(creator).createVoucherOrder(argThat(o -> o.getId().equals(1000L)));
+    }
+
+    @Test
+    void legacyUncreatedCompensationReturnsToCreationPath() {
+        when(processes.findByStatusAfter("COMPENSATING", 0, 100))
+                .thenReturn(List.of(process(1000, "COMPENSATING")));
+        assertTrue(job.reconcileBatch().successful());
+        verify(creator).createVoucherOrder(argThat(o -> o.getId().equals(1000L)));
+        verifyNoInteractions(compensation);
     }
 
     private VoucherOrderProcess process(long id, String status) {

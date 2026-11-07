@@ -1,6 +1,5 @@
 package com.hmdp.service.impl;
 
-import com.hmdp.common.enums.OrderProcessStatus;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.entity.VoucherOrderProcess;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -45,16 +44,9 @@ class VoucherOrderProcessServiceTest {
     }
 
     @Test
-    void compensationDecisionStopsLateCreate() {
-        row.setStatus("DEAD_LETTER");
-        assertEquals(OrderProcessStatus.COMPENSATING, service.requestCompensation(1000L, 5L, 10L));
-        assertEquals("COMPENSATING", row.getStatus());
-    }
-
-    @Test
-    void existingHistoricalOrderIsNotCompensated() {
+    void existingHistoricalOrderIsMarkedCreated() {
         when(orders.selectRoutedOrder(1000L, 5L, 10L)).thenReturn(new VoucherOrder().setStatus(1));
-        assertEquals(OrderProcessStatus.CREATED, service.requestCompensation(1000L, 5L, 10L));
+        service.recordDeadLetter(event);
         assertEquals("CREATED", row.getStatus());
     }
 

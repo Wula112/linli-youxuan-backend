@@ -51,7 +51,7 @@ hmdp:
     reconcile:
       enabled: true
       interval: 1m
-      pending-timeout: 5m
+      pending-timeout: 2m
       batch-size: 100
   cache:
     warmup:

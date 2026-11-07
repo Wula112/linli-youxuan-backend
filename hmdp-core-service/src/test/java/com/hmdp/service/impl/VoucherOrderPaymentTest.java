@@ -5,6 +5,8 @@ import com.hmdp.common.dto.UserDTO;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.common.enums.VoucherOrderStatus;
 import com.hmdp.mapper.VoucherOrderMapper;
+import com.hmdp.mapper.VoucherOrderProcessMapper;
+import com.hmdp.repository.redis.SeckillReservation;
 import com.hmdp.common.context.UserHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +31,8 @@ class VoucherOrderPaymentTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(facade, "baseMapper", orders);
+        ReflectionTestUtils.setField(facade, "seckillReservation", mock(SeckillReservation.class));
+        ReflectionTestUtils.setField(facade, "voucherOrderProcessMapper", mock(VoucherOrderProcessMapper.class));
         var routes = com.hmdp.support.OrderRoutingTestSupport.install(facade);
         ReflectionTestUtils.setField(service, "voucherOrderMapper", orders);
         ReflectionTestUtils.setField(service, "voucherOrderRouterMapper", routes);

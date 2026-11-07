@@ -8,6 +8,7 @@ import com.hmdp.mq.support.MqMessageCodec;
 import com.hmdp.mq.producer.SeckillTransactionListener;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.service.impl.VoucherOrderProcessService;
+import com.hmdp.service.impl.SeckillCircuitBreaker;
 import org.apache.rocketmq.client.consumer.DefaultMQPushConsumer;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.common.message.Message;
@@ -77,7 +78,8 @@ class VoucherOrderDeadLetterIT {
                     MqMessageCodec.encode(event)));
             RocketMqConfig config = new RocketMqConfig();
             // 死信主题初始不存在，验证消费者在主题随后由 Broker 创建时仍能发现它。
-            dead = config.voucherOrderDeadLetterConsumer(properties, new VoucherOrderDeadLetterConsumer(processes));
+            dead = config.voucherOrderDeadLetterConsumer(properties,
+                    new VoucherOrderDeadLetterConsumer(processes, mock(SeckillCircuitBreaker.class)));
             normal = config.voucherOrderConsumer(properties, new VoucherOrderConsumer(orders, redisson));
             assertTrue(recorded.await(55, TimeUnit.SECONDS), "死信未被自动登记");
             verify(processes).recordDeadLetter(event);
